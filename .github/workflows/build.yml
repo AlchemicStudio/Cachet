@@ -47,16 +47,19 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm --clean signApp.spec
 
-      # Smoke-test SANS carte : aucune image PNG/PDF n'est versionnée, on les
-      # génère via Pillow (déjà installé), puis on exerce le mode image du
-      # binaire CLI de bout en bout. Le mode eID exige du matériel -> non testé.
+      # Smoke-test SANS carte : on génère les fixtures avec les générateurs du
+      # projet (make_pdf écrit un PDF brut valide ; make_png un PNG), puis on
+      # exerce le mode image du binaire CLI de bout en bout. On n'utilise PAS
+      # Image.save(".pdf") de Pillow : son écriture PDF exige l'encodeur JPEG,
+      # absent de certaines roues Pillow (KeyError: 'JPEG'). Le mode eID exige
+      # du matériel -> non testé ici.
       - name: Smoke test (CLI image mode, no eID hardware)
         shell: bash
         run: |
           python - <<'PY'
-          from PIL import Image
-          Image.new("RGB", (595, 842), "white").save("smoke.pdf")
-          Image.new("RGBA", (200, 80), (0, 0, 160, 255)).save("sig.png")
+          from test_sign_pdfs_beid import make_pdf, make_png
+          make_pdf("smoke.pdf", [(595, 842)])
+          make_png("sig.png")
           print("fixtures écrites")
           PY
           CLI=$(ls dist/signApp-cli* | head -1)
