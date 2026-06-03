@@ -1,0 +1,12 @@
+# Dépendances de BUILD (en plus de requirements.txt, qui liste le runtime).
+#   ./venv/bin/pip install -r requirements.txt -r requirements-build.txt
+#
+# PyInstaller (épinglé sur la version validée). Tire pyinstaller-hooks-contrib,
+# qui fournit les hooks tkinter/customtkinter/cryptography/lxml/PIL/certifi.
+pyinstaller==6.20.0
+
+# tzdata : UNIQUEMENT sur Windows. pyHanko horodate la signature via tzlocal,
+# qui y construit un zoneinfo.ZoneInfo ; Windows n'ayant pas de base zoneinfo
+# système, le paquet tzdata doit être embarqué. Sous Linux/macOS, la base
+# système suffit (marqueur d'environnement -> pip l'ignore hors Windows).
+tzdata; sys_platform == "win32"

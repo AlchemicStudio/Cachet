@@ -1,0 +1,26 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- Virtualenv (provisioned locally; not committed) ---
+venv/
+
+# --- PyInstaller build artifacts ---
+build/
+dist/
+*.manifest
+
+# --- Wine cross-build : prefix, installeur Python téléchargé, fixtures ---
+wine-prefix/
+.wine-signapp/
+python-*-amd64.exe
+wine_in.pdf
+wine_sig.png
+wine_fake.dll
+wine_out/
+
+# --- Misc ---
+*.log
+.DS_Store

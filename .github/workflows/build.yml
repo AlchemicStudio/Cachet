@@ -1,0 +1,89 @@
+name: Build executables
+
+# Construit les deux exécutables (signApp fenêtré + signApp-cli console) sur
+# Windows ET Linux à l'aide du spec partagé signApp.spec, puis publie les
+# artefacts téléchargeables. Déclenché sur push/tag/manuel.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # 3.14 fonctionne aussi (les wheels win_amd64 existent pour tout le socle
+  # compilé), mais 3.13 est le plus éprouvé pour PyInstaller + tkinter.
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      # poppler-utils : seulement pour permettre un futur smoke-test de l'aperçu
+      # GUI ; non embarqué dans le binaire (dépendance runtime côté utilisateur).
+      - name: Linux system deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm --clean signApp.spec
+
+      # Smoke-test SANS carte : aucune image PNG/PDF n'est versionnée, on les
+      # génère via Pillow (déjà installé), puis on exerce le mode image du
+      # binaire CLI de bout en bout. Le mode eID exige du matériel -> non testé.
+      - name: Smoke test (CLI image mode, no eID hardware)
+        shell: bash
+        run: |
+          python - <<'PY'
+          from PIL import Image
+          Image.new("RGB", (595, 842), "white").save("smoke.pdf")
+          Image.new("RGBA", (200, 80), (0, 0, 160, 255)).save("sig.png")
+          print("fixtures écrites")
+          PY
+          CLI=$(ls dist/signApp-cli* | head -1)
+          echo "Binaire CLI : $CLI"
+          "$CLI" --help >/dev/null
+          "$CLI" --mode image --image-path sig.png --input smoke.pdf \
+                 --output smoke_out --page 1 --x 100 --y 100
+          test -n "$(ls smoke_out/*.pdf 2>/dev/null)" || { echo "ÉCHEC : aucun PDF de sortie"; exit 1; }
+          echo "OK : mode image fonctionne dans le binaire gelé."
+
+      - name: Verify both binaries exist
+        shell: bash
+        run: |
+          ls -la dist/
+          # le binaire fenêtré + le binaire console doivent être présents
+          test -n "$(ls dist/signApp dist/signApp.exe 2>/dev/null)" || { echo "ÉCHEC : signApp manquant"; exit 1; }
+          test -n "$(ls dist/signApp-cli dist/signApp-cli.exe 2>/dev/null)" || { echo "ÉCHEC : signApp-cli manquant"; exit 1; }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          # nom unique par OS : upload-artifact@v4 refuse les noms dupliqués.
+          name: signApp-${{ matrix.os }}
+          path: |
+            dist/signApp
+            dist/signApp.exe
+            dist/signApp-cli
+            dist/signApp-cli.exe
+          if-no-files-found: error
+          retention-days: 30
