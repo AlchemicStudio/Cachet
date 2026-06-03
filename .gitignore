@@ -11,11 +11,11 @@ venv/
 build/
 dist/
 *.manifest
-# Archives de transfert des binaires (ex. dist.zip vers un PC Windows) — trop
-# volumineuses pour git (limite GitHub 100 Mo) ; à transférer hors dépôt.
+# Binary transfer archives (e.g. dist.zip to a Windows PC) — too large for git
+# (GitHub's 100 MB limit); transfer them outside the repository.
 *.zip
 
-# --- Wine cross-build : prefix, installeur Python téléchargé, fixtures ---
+# --- Wine cross-build: prefix, downloaded Python installer, fixtures ---
 wine-prefix/
 .wine-signapp/
 python-*-amd64.exe

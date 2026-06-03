@@ -1,25 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller — deux exécutables autonomes, depuis UN seul spec.
+"""PyInstaller — two standalone executables, from ONE single spec.
 
     pyinstaller signApp.spec        # Linux -> dist/signApp + dist/signApp-cli
                                     # Windows -> dist/signApp.exe + dist/signApp-cli.exe
 
-Produit :
-  * « signApp »      : binaire FENÊTRÉ (console=False). Double-clic -> ouvre la
-                       GUI CustomTkinter (point d'entrée : gui_main.py). Embarque
-                       Tk/CustomTkinter + tout le moteur.
-  * « signApp-cli »  : binaire CONSOLE (console=True). Signature/tampon en lot
-                       depuis un terminal (point d'entrée : sign_pdfs_beid.py).
-                       Volontairement SANS Tk (headless), donc plus léger.
+Produces:
+  * "signApp"        : WINDOWED binary (console=False). Double-click -> opens the
+                       CustomTkinter GUI (entry point: gui_main.py). Bundles
+                       Tk/CustomTkinter + the whole engine.
+  * "signApp-cli"    : CONSOLE binary (console=True). Batch signing/stamping
+                       from a terminal (entry point: sign_pdfs_beid.py).
+                       Deliberately WITHOUT Tk (headless), hence lighter.
 
-Dépendances RUNTIME volontairement NON embarquées (à installer sur la machine
-cible) — voir BUILD.md :
-  * Middleware eID belge -> libbeidpkcs11.so / beidpkcs11.dll, chargé par chemin
-    via pkcs11.lib() (mode beid uniquement). Spécifique à la machine + au lecteur.
-  * poppler (pdftoppm) -> repli OPTIONNEL pour l'aperçu de page. L'aperçu est
-    désormais rendu par pypdfium2 (PDFium embarqué dans le binaire GUI via les
-    hooks fournis), donc rien à installer côté utilisateur ; pdftoppm n'est
-    utilisé que s'il est déjà présent (cf. core.render_page_image).
+RUNTIME dependencies deliberately NOT bundled (to be installed on the target
+machine) — see BUILD.md:
+  * Belgian eID middleware -> libbeidpkcs11.so / beidpkcs11.dll, loaded by path
+    via pkcs11.lib() (beid mode only). Specific to the machine + the reader.
+  * poppler (pdftoppm) -> OPTIONAL fallback for the page preview. The preview is
+    now rendered by pypdfium2 (PDFium bundled into the GUI binary via the
+    provided hooks), so nothing to install on the user's side; pdftoppm is
+    only used if it is already present (cf. core.render_page_image).
 """
 
 import sys
@@ -32,7 +32,7 @@ from PyInstaller.utils.hooks import (
 )
 
 # --------------------------------------------------------------------------- #
-#  Helpers de collecte
+#  Collection helpers
 # --------------------------------------------------------------------------- #
 common_datas = []
 common_binaries = []
@@ -40,7 +40,7 @@ common_hidden = []
 
 
 def _add_all(pkg, *, datas, binaries, hidden):
-    """collect_all(pkg) -> ajoute (datas, binaries, hiddenimports) aux listes."""
+    """collect_all(pkg) -> adds (datas, binaries, hiddenimports) to the lists."""
     d, b, h = collect_all(pkg)
     datas.extend(d)
     binaries.extend(b)
@@ -48,32 +48,32 @@ def _add_all(pkg, *, datas, binaries, hidden):
 
 
 def _meta(dist, datas):
-    """copy_metadata tolérant : certaines libs lisent leur version/entry-points
-    via importlib.metadata au runtime (pyHanko notamment)."""
+    """Tolerant copy_metadata: some libs read their version/entry-points
+    via importlib.metadata at runtime (pyHanko notably)."""
     try:
         datas.extend(copy_metadata(dist))
-    except Exception as exc:  # pragma: no cover - dépend de l'environnement
-        print(f"[signApp.spec] copy_metadata({dist!r}) ignoré : {exc}")
+    except Exception as exc:  # pragma: no cover - depends on the environment
+        print(f"[signApp.spec] copy_metadata({dist!r}) ignored: {exc}")
 
 
-# --- Moteur commun (CLI + GUI) : aucune dépendance Tk ici ------------------- #
-# pyHanko + plugins : pas de hook fourni -> on collecte tout (sous-modules,
-# données éventuelles) et on copie les métadonnées (découverte de plugins).
+# --- Common engine (CLI + GUI): no Tk dependency here ----------------------- #
+# pyHanko + plugins: no provided hook -> collect everything (submodules,
+# possible data) and copy the metadata (plugin discovery).
 for _pkg in ("pyhanko", "pyhanko_beid", "pyhanko_certvalidator"):
     _add_all(_pkg, datas=common_datas, binaries=common_binaries, hidden=common_hidden)
 
-# asn1crypto + oscrypto : pas de hook fourni. oscrypto EST sur le chemin
-# d'import (tiré par pyhanko_certvalidator) et charge OpenSSL au runtime ->
-# doit être présent dans le bundle.
+# asn1crypto + oscrypto: no provided hook. oscrypto IS on the import path
+# (pulled in by pyhanko_certvalidator) and loads OpenSSL at runtime ->
+# must be present in the bundle.
 for _pkg in ("asn1crypto", "oscrypto"):
     _add_all(_pkg, datas=common_datas, binaries=common_binaries, hidden=common_hidden)
 
-# python-pkcs11 : extension native _pkcs11 -> binaire à embarquer explicitement.
+# python-pkcs11: native _pkcs11 extension -> binary to bundle explicitly.
 _add_all("pkcs11", datas=common_datas, binaries=common_binaries, hidden=common_hidden)
 common_binaries += collect_dynamic_libs("pkcs11")
 common_hidden += ["pkcs11._pkcs11"]
 
-# Métadonnées lues au runtime (versions / entry-points).
+# Metadata read at runtime (versions / entry-points).
 for _dist in (
     "pyHanko",
     "pyhanko-beid-plugin",
@@ -86,14 +86,14 @@ for _dist in (
 ):
     _meta(_dist, common_datas)
 
-# lxml : hook fourni, mais on s'assure des sous-modules (xpath/objectify...).
+# lxml: hook provided, but we make sure of the submodules (xpath/objectify...).
 common_hidden += collect_submodules("lxml")
 
-# tzdata : SUR WINDOWS UNIQUEMENT. pyHanko horodate la signature via tzlocal,
-# qui y construit un zoneinfo.ZoneInfo — or Windows n'a pas de base zoneinfo
-# système, il faut donc embarquer le paquet « tzdata ». Sous Linux/macOS la base
-# système (/usr/share/zoneinfo) suffit et tzdata est généralement absent : on ne
-# collecte QUE s'il est installé (sinon no-op).
+# tzdata: ON WINDOWS ONLY. pyHanko timestamps the signature via tzlocal,
+# which builds a zoneinfo.ZoneInfo there — but Windows has no system zoneinfo
+# database, so the "tzdata" package must be bundled. On Linux/macOS the system
+# database (/usr/share/zoneinfo) is enough and tzdata is generally absent: we
+# collect it ONLY if it is installed (no-op otherwise).
 import importlib.util as _ilu
 
 if _ilu.find_spec("tzdata") is not None:
@@ -102,13 +102,13 @@ if _ilu.find_spec("tzdata") is not None:
     _meta("tzdata", common_datas)
 
 # --------------------------------------------------------------------------- #
-#  Extras GUI (uniquement pour le binaire fenêtré)
+#  GUI extras (only for the windowed binary)
 # --------------------------------------------------------------------------- #
 gui_datas = list(common_datas)
 gui_binaries = list(common_binaries)
 gui_hidden = list(common_hidden)
 
-# customtkinter : hook fourni, mais collect_all garantit thèmes + polices.
+# customtkinter: hook provided, but collect_all guarantees themes + fonts.
 _add_all("customtkinter", datas=gui_datas, binaries=gui_binaries, hidden=gui_hidden)
 gui_hidden += [
     "darkdetect",
@@ -118,14 +118,14 @@ gui_hidden += [
     "tkinter.messagebox",
     "PIL.ImageTk",
     "PIL._tkinter_finder",
-    "gui",  # module local importé paresseusement par gui_main
-    # Aperçu de page : moteur PDFium embarqué (rendu sans dépendance externe).
-    # Les hooks fournis (hook-pypdfium2*.py) embarquent la lib native.
+    "gui",  # local module imported lazily by gui_main
+    # Page preview: bundled PDFium engine (rendering without external dependency).
+    # The provided hooks (hook-pypdfium2*.py) bundle the native lib.
     "pypdfium2",
 ]
 
 # --------------------------------------------------------------------------- #
-#  Le binaire CLI exclut tout Tk : il est headless par conception.
+#  The CLI binary excludes all Tk: it is headless by design.
 # --------------------------------------------------------------------------- #
 CLI_EXCLUDES = [
     "tkinter",
@@ -135,13 +135,13 @@ CLI_EXCLUDES = [
     "PIL.ImageTk",
     "gui",
     "gui_main",
-    # L'aperçu de page est exclusivement GUI : pas de PDFium dans le binaire CLI.
+    # The page preview is exclusively GUI: no PDFium in the CLI binary.
     "pypdfium2",
     "pypdfium2_raw",
 ]
 
-# Icône optionnelle : déposez signApp.ico (Windows) / signApp.icns (macOS) à
-# côté de ce spec pour personnaliser. Absent -> icône par défaut.
+# Optional icon: drop signApp.ico (Windows) / signApp.icns (macOS) next to
+# this spec to customize. Absent -> default icon.
 import os as _os
 
 _ICON = None
@@ -151,7 +151,7 @@ for _cand in ("signApp.ico", "signApp.icns"):
         break
 
 # --------------------------------------------------------------------------- #
-#  Binaire CONSOLE : signApp-cli  (entrée = sign_pdfs_beid.py)
+#  CONSOLE binary: signApp-cli  (entry = sign_pdfs_beid.py)
 # --------------------------------------------------------------------------- #
 a_cli = Analysis(
     ["sign_pdfs_beid.py"],
@@ -175,8 +175,8 @@ exe_cli = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    # UPX désactivé : il peut corrompre certaines .so/.dll crypto (libcrypto,
-    # _rust de cryptography) et provoque des plantages difficiles à diagnostiquer.
+    # UPX disabled: it can corrupt some crypto .so/.dll (libcrypto,
+    # cryptography's _rust) and causes crashes that are hard to diagnose.
     upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
@@ -190,7 +190,7 @@ exe_cli = EXE(
 )
 
 # --------------------------------------------------------------------------- #
-#  Binaire FENÊTRÉ : signApp  (entrée = gui_main.py)
+#  WINDOWED binary: signApp  (entry = gui_main.py)
 # --------------------------------------------------------------------------- #
 a_gui = Analysis(
     ["gui_main.py"],
@@ -214,7 +214,7 @@ exe_gui = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False,  # cf. binaire CLI ci-dessus : UPX peut corrompre les .so crypto
+    upx=False,  # cf. CLI binary above: UPX can corrupt crypto .so files
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,

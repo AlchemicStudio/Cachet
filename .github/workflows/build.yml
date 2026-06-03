@@ -1,8 +1,8 @@
 name: Build executables
 
-# Construit les deux exécutables (signApp fenêtré + signApp-cli console) sur
-# Windows ET Linux à l'aide du spec partagé signApp.spec, puis publie les
-# artefacts téléchargeables. Déclenché sur push/tag/manuel.
+# Builds both executables (windowed signApp + console signApp-cli) on
+# Windows AND Linux using the shared signApp.spec, then publishes the
+# downloadable artifacts. Triggered on push/tag/manual.
 on:
   push:
     branches: [main]
@@ -11,8 +11,8 @@ on:
   workflow_dispatch:
 
 env:
-  # 3.14 fonctionne aussi (les wheels win_amd64 existent pour tout le socle
-  # compilé), mais 3.13 est le plus éprouvé pour PyInstaller + tkinter.
+  # 3.14 works too (win_amd64 wheels exist for the whole compiled base),
+  # but 3.13 is the most battle-tested for PyInstaller + tkinter.
   PYTHON_VERSION: "3.13"
 
 jobs:
@@ -33,8 +33,8 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
-      # poppler-utils : seulement pour permettre un futur smoke-test de l'aperçu
-      # GUI ; non embarqué dans le binaire (dépendance runtime côté utilisateur).
+      # poppler-utils: only to enable a future smoke-test of the GUI preview;
+      # not bundled into the binary (runtime dependency on the user's side).
       - name: Linux system deps
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y poppler-utils
@@ -47,12 +47,12 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm --clean signApp.spec
 
-      # Smoke-test SANS carte : on génère les fixtures avec les générateurs du
-      # projet (make_pdf écrit un PDF brut valide ; make_png un PNG), puis on
-      # exerce le mode image du binaire CLI de bout en bout. On n'utilise PAS
-      # Image.save(".pdf") de Pillow : son écriture PDF exige l'encodeur JPEG,
-      # absent de certaines roues Pillow (KeyError: 'JPEG'). Le mode eID exige
-      # du matériel -> non testé ici.
+      # Smoke-test WITHOUT a card: we generate the fixtures with the project's
+      # generators (make_pdf writes a valid raw PDF; make_png a PNG), then we
+      # exercise the CLI binary's image mode end to end. We do NOT use Pillow's
+      # Image.save(".pdf"): its PDF writer requires the JPEG encoder, which is
+      # absent from some Pillow wheels (KeyError: 'JPEG'). eID mode requires
+      # hardware -> not tested here.
       - name: Smoke test (CLI image mode, no eID hardware)
         shell: bash
         run: |
@@ -60,28 +60,28 @@ jobs:
           from test_sign_pdfs_beid import make_pdf, make_png
           make_pdf("smoke.pdf", [(595, 842)])
           make_png("sig.png")
-          print("fixtures écrites")
+          print("fixtures written")
           PY
           CLI=$(ls dist/signApp-cli* | head -1)
-          echo "Binaire CLI : $CLI"
+          echo "CLI binary: $CLI"
           "$CLI" --help >/dev/null
           "$CLI" --mode image --image-path sig.png --input smoke.pdf \
                  --output smoke_out --page 1 --x 100 --y 100
-          test -n "$(ls smoke_out/*.pdf 2>/dev/null)" || { echo "ÉCHEC : aucun PDF de sortie"; exit 1; }
-          echo "OK : mode image fonctionne dans le binaire gelé."
+          test -n "$(ls smoke_out/*.pdf 2>/dev/null)" || { echo "FAIL: no output PDF"; exit 1; }
+          echo "OK: image mode works in the frozen binary."
 
       - name: Verify both binaries exist
         shell: bash
         run: |
           ls -la dist/
-          # le binaire fenêtré + le binaire console doivent être présents
-          test -n "$(ls dist/signApp dist/signApp.exe 2>/dev/null)" || { echo "ÉCHEC : signApp manquant"; exit 1; }
-          test -n "$(ls dist/signApp-cli dist/signApp-cli.exe 2>/dev/null)" || { echo "ÉCHEC : signApp-cli manquant"; exit 1; }
+          # the windowed binary + the console binary must both be present
+          test -n "$(ls dist/signApp dist/signApp.exe 2>/dev/null)" || { echo "FAIL: signApp missing"; exit 1; }
+          test -n "$(ls dist/signApp-cli dist/signApp-cli.exe 2>/dev/null)" || { echo "FAIL: signApp-cli missing"; exit 1; }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          # nom unique par OS : upload-artifact@v4 refuse les noms dupliqués.
+          # unique name per OS: upload-artifact@v4 rejects duplicate names.
           name: signApp-${{ matrix.os }}
           path: |
             dist/signApp

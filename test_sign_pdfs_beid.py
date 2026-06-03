@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Tests headless (sans carte, sans tkinter) pour signApp.
+"""Headless tests (no card, no tkinter) for signApp.
 
-Couvre la logique métier ajoutée : extraction des dimensions de page, validation
-face au modèle, insertion d'image, calcul de placement et résolution des
-arguments CLI. Lancer avec :  ./venv/bin/python -m unittest -v
+Covers the added business logic: page dimension extraction, validation against
+the template, image insertion, placement math, and CLI argument resolution.
+Run with:  ./venv/bin/python -m unittest -v
 """
 
 import subprocess
@@ -18,9 +18,9 @@ import sign_pdfs_beid as core
 
 
 def make_pdf(path, page_sizes) -> Path:
-    """Écrit un PDF minimal mais valide (xref correct) avec les pages données,
-    chacune décrite par un (largeur, hauteur) en points. Chaque page a un flux
-    /Contents (vide) — requis par pyHanko pour tamponner."""
+    """Writes a minimal but valid PDF (correct xref) with the given pages,
+    each described by a (width, height) in points. Each page has a (empty)
+    /Contents stream — required by pyHanko in order to stamp."""
     n = len(page_sizes)
     objs = [b"<</Type/Catalog/Pages 2 0 R>>"]                      # obj 1
     kids = " ".join(f"{3 + 2 * i} 0 R" for i in range(n))
@@ -84,7 +84,7 @@ class Validation(TmpCase):
         self.assertIn("page", r.reason)
 
     def test_dimension_mismatch_rejected_no_tolerance(self):
-        # même nombre de pages, mais 1 pt d'écart sur la 2e page → rejet
+        # same page count, but a 1 pt difference on the 2nd page → rejected
         off = make_pdf(self.p("off.pdf"), [(595, 842), (595, 843)])
         r = core.validate_against_template(core.page_dimensions(self.tpl), off)
         self.assertFalse(r.ok)
@@ -105,7 +105,7 @@ class ImageInsertion(TmpCase):
         core.insert_image_one(src, dst, png, page_index=1, x=50, y=60)
         self.assertTrue(dst.exists())
         self.assertGreater(dst.stat().st_size, src.stat().st_size)
-        # le nombre de pages doit être inchangé
+        # the page count must be unchanged
         self.assertEqual(len(core.page_dimensions(dst)), 2)
 
     def test_image_size_keeps_aspect(self):
@@ -119,11 +119,11 @@ class ImageInsertion(TmpCase):
         png = make_png(self.p("sig.png"))
         with self.assertRaises(ValueError) as cm:
             core.insert_image_one(src, self.p("o.pdf"), png, page_index=5, x=10, y=10)
-        self.assertIn("hors limites", str(cm.exception))
+        self.assertIn("out of range", str(cm.exception))
 
     def test_inserted_image_has_no_black_border(self):
-        # image gris clair opaque sur page blanche : une bordure noire (le défaut
-        # border_width=3 de StaticStampStyle) produirait un cadre de pixels noirs.
+        # opaque light-gray image on a white page: a black border (StaticStampStyle's
+        # default border_width=3) would produce a frame of black pixels.
         src = make_pdf(self.p("p.pdf"), [(300, 400)])
         png = self.p("s.png")
         Image.new("RGB", (160, 80), (210, 210, 210)).save(png)
@@ -131,21 +131,21 @@ class ImageInsertion(TmpCase):
         core.insert_image_one(src, dst, png, page_index=0, x=60, y=160)
         img = core.render_page_image(dst, 0, px_width=300)
         if img is None:
-            self.skipTest("pdftoppm (poppler) indisponible")
+            self.skipTest("pdftoppm (poppler) unavailable")
         px = img.convert("RGB").load()
         W, H = img.size
         black = sum(1 for yy in range(H) for xx in range(W)
                     if sum(px[xx, yy]) < 90)
-        self.assertLess(black, 30, f"{black} pixels (quasi) noirs -> bordure présente")
+        self.assertLess(black, 30, f"{black} (near-)black pixels -> border present")
 
 
 class BatchImageMode(TmpCase):
-    """Chemin partagé CLI/GUI : validation + insertion d'image de bout en bout."""
+    """Shared CLI/GUI path: validation + image insertion end-to-end."""
 
     def test_process_batch_validates_then_inserts(self):
         tpl = make_pdf(self.p("tpl.pdf"), [(595, 842), (595, 842)])
         good = make_pdf(self.p("good.pdf"), [(595, 842), (595, 842)])
-        bad = make_pdf(self.p("bad.pdf"), [(595, 842)])           # mauvais nb de pages
+        bad = make_pdf(self.p("bad.pdf"), [(595, 842)])           # wrong page count
         png = make_png(self.p("sig.png"))
         outdir = self.p("out")
 
@@ -159,14 +159,14 @@ class BatchImageMode(TmpCase):
         by_name = {r.path.name: r for r in results}
         self.assertTrue(by_name["good.pdf"].ok)
         self.assertFalse(by_name["bad.pdf"].ok)
-        self.assertIn("rejeté", by_name["bad.pdf"].detail)
+        self.assertIn("rejected", by_name["bad.pdf"].detail)
         self.assertTrue((outdir / "good_signe.pdf").exists())
-        self.assertFalse((outdir / "bad_signe.pdf").exists())     # rejeté → pas de sortie
-        self.assertEqual(len(seen), 2)                            # progression par doc
+        self.assertFalse((outdir / "bad_signe.pdf").exists())     # rejected → no output
+        self.assertEqual(len(seen), 2)                            # per-doc progress
 
 
 class BatchBeidWiring(TmpCase):
-    """Câblage du placement de la vignette beid (sans carte : sign_one est moqué)."""
+    """beid vignette placement wiring (no card: sign_one is mocked)."""
 
     def _run(self, cfg):
         calls = []
@@ -194,7 +194,7 @@ class BatchBeidWiring(TmpCase):
 
     def test_no_placement_uses_default_vignette(self):
         src = make_pdf(self.p("d.pdf"), [(595, 842)])
-        cfg = core.RunConfig(inputs=[src], output=self.p("o"), mode="beid")  # pas de x/y
+        cfg = core.RunConfig(inputs=[src], output=self.p("o"), mode="beid")  # no x/y
         calls, _ = self._run(cfg)
         (_, kw) = calls[0]
         self.assertIsNone(kw.get("page_index"))            # -> _last_page_box / on_page=-1
@@ -213,7 +213,7 @@ class OutputNaming(TmpCase):
         src = make_pdf(self.p("doc.pdf"), [(400, 600)])
         png = make_png(self.p("s.png"))
         out = self.p("out"); out.mkdir()
-        (out / "doc_signe.pdf").write_bytes(b"EXISTING")     # collision pré-existante
+        (out / "doc_signe.pdf").write_bytes(b"EXISTING")     # pre-existing collision
         cfg = core.RunConfig(inputs=[src], output=out, mode="image",
                              image_path=png, page=1, x=10, y=10)
         results = core.process_batch(cfg)
@@ -226,8 +226,8 @@ class VignetteGeometry(unittest.TestCase):
     def test_3to1_landscape_one_fifth_width(self):
         for page_w in (595.0, 842.0, 1000.0):
             w, h = core.vignette_size_pt(page_w)
-            self.assertAlmostEqual(w, page_w / 5)        # largeur = 1/5 de la page
-            self.assertAlmostEqual(w / h, 3.0)           # ratio 3:1 paysage
+            self.assertAlmostEqual(w, page_w / 5)        # width = 1/5 of the page
+            self.assertAlmostEqual(w / h, 3.0)           # 3:1 landscape ratio
 
 
 class PageRender(TmpCase):
@@ -235,8 +235,8 @@ class PageRender(TmpCase):
         pdf = make_pdf(self.p("two.pdf"), [(300, 400), (300, 400)])
         img = core.render_page_image(pdf, 0, px_width=120)
         if img is None:
-            self.skipTest("pdftoppm (poppler) indisponible")
-        self.assertEqual(img.size[0], 120)               # mis à l'échelle en largeur
+            self.skipTest("pdftoppm (poppler) unavailable")
+        self.assertEqual(img.size[0], 120)               # scaled to the width
         self.assertAlmostEqual(img.size[1] / img.size[0], 400 / 300, delta=0.05)
 
 
@@ -249,23 +249,23 @@ class PlacementMath(unittest.TestCase):
 
     def test_click_corners(self):
         pw, ph, fw, fh = 600, 800, 300, 400
-        # haut-gauche du cadre -> (0, ph)
+        # top-left of the frame -> (0, ph)
         self.assertEqual(core.frame_click_to_pdf_xy(pw, ph, fw, fh, 0, 0), (0.0, ph))
-        # bas-gauche -> (0, 0)
+        # bottom-left -> (0, 0)
         self.assertEqual(core.frame_click_to_pdf_xy(pw, ph, fw, fh, 0, fh), (0.0, 0.0))
-        # bas-droite -> (pw, 0)
+        # bottom-right -> (pw, 0)
         self.assertEqual(core.frame_click_to_pdf_xy(pw, ph, fw, fh, fw, fh), (pw, 0.0))
 
     def test_pdf_rect_round_trips_into_frame(self):
         pw, ph, fw, fh = 600, 800, 300, 400
         left, top, w, h = core.pdf_rect_to_frame_rect(pw, ph, fw, fh, 0, 0, 150, 100)
         self.assertEqual((left, w), (0.0, 75.0))            # 150 pt * 0.5 = 75 px
-        self.assertAlmostEqual(top, fh - 50.0)              # image en bas du cadre
+        self.assertAlmostEqual(top, fh - 50.0)              # image at the bottom of the frame
         self.assertAlmostEqual(h, 50.0)
 
 
 class _Args:
-    """Imite l'objet renvoyé par argparse pour tester resolve_config."""
+    """Mimics the object returned by argparse to test resolve_config."""
 
     def __init__(self, **kw):
         defaults = dict(inputs=[], input=None, output=None, template=None, mode="beid",
@@ -289,7 +289,7 @@ class ArgResolution(TmpCase):
         self.assertEqual(cfg.mode, "beid")
 
     def test_backward_compat_positionals(self):
-        # ancien style : « entrées... sortie »
+        # old style: "inputs... output"
         cfg = core.resolve_config(_Args(inputs=[str(self.a), str(self.tmp)]))
         self.assertEqual([p.name for p in cfg.inputs], ["a.pdf"])
         self.assertEqual(cfg.output, self.tmp)
@@ -306,7 +306,7 @@ class ArgResolution(TmpCase):
 
     def test_missing_output_rejected(self):
         with self.assertRaises(ValueError):
-            core.resolve_config(_Args(input=[str(self.a)]))  # pas de --output ni positionnel
+            core.resolve_config(_Args(input=[str(self.a)]))  # no --output nor positional
 
     def test_template_not_found_rejected(self):
         with self.assertRaises(ValueError):
@@ -315,20 +315,20 @@ class ArgResolution(TmpCase):
 
 
 class GuiImageEndToEnd(unittest.TestCase):
-    """Régression : chemin GUI lancer → thread → queue → tableau (mode image).
+    """Regression: GUI launch → thread → queue → table path (image mode).
 
-    Tkinter n'étant pas thread-safe, le worker ne doit PAS appeler `after()` ;
-    il pousse dans une queue drainée par le thread principal. Sauté si
-    tkinter/affichage indisponible (ex. CI headless)."""
+    Since Tkinter is not thread-safe, the worker must NOT call `after()`;
+    it pushes onto a queue drained by the main thread. Skipped if
+    tkinter/display is unavailable (e.g. headless CI)."""
 
     def setUp(self):
         import types
         try:
             import tkinter
-            tkinter.Tk().destroy()      # détecte l'absence d'affichage
-            import gui                   # noqa: F401 - nécessite customtkinter+tk
+            tkinter.Tk().destroy()      # detects the absence of a display
+            import gui                   # noqa: F401 - requires customtkinter+tk
         except Exception as exc:  # noqa: BLE001
-            self.skipTest(f"tkinter/GUI indisponible : {exc}")
+            self.skipTest(f"tkinter/GUI unavailable: {exc}")
         self.tmp = Path(tempfile.mkdtemp())
         self.types = types
 
@@ -354,47 +354,47 @@ class GuiImageEndToEnd(unittest.TestCase):
         app._on_canvas_click(self.types.SimpleNamespace(x=ox + fw * 0.5, y=oy + fh * 0.5))
         app.update()
         app._launch()
-        self.assertEqual(str(app.launch_btn.cget("state")), "disabled")  # verrouillé pendant
-        for _ in range(120):                       # pompe la boucle Tk (max ~6 s)
+        self.assertEqual(str(app.launch_btn.cget("state")), "disabled")  # locked during
+        for _ in range(120):                       # pump the Tk loop (max ~6 s)
             app.update()
             time.sleep(0.05)
-            if app.status_lbl.cget("text").startswith(("Terminé", "Erreur")):
+            if app.status_lbl.cget("text").startswith(("Done", "Error")):
                 break
         app.update()
         status = app.status_lbl.cget("text")
         n_rows = len(app.summary_table.get_children())
         btn_state = str(app.launch_btn.cget("state"))
         app.destroy()
-        self.assertTrue(status.startswith("Terminé"), status)   # pas "Erreur" / pas figé
+        self.assertTrue(status.startswith("Done"), status)      # not "Error" / not frozen
         self.assertEqual(n_rows, 1)
-        self.assertEqual(btn_state, "normal")                   # ré-activé après
+        self.assertEqual(btn_state, "normal")                   # re-enabled afterwards
         self.assertTrue((out / "t_signe.pdf").exists())
 
     def test_run_batch_reports_systemexit_without_hanging(self):
-        # open_eid_session() lève SystemExit (pas de lecteur/carte) ; le worker
-        # doit l'attraper et publier une erreur, pas mourir en silence.
+        # open_eid_session() raises SystemExit (no reader/card); the worker
+        # must catch it and publish an error, not die silently.
         import gui
         app = gui.SignApp(self.types.SimpleNamespace(lib=None))
         app.update()
         app._result_q = __import__("queue").Queue()
 
         def boom(*a, **k):
-            raise SystemExit("Aucun lecteur de carte détecté.")
+            raise SystemExit("No card reader detected.")
 
         orig, core.process_batch = core.process_batch, boom
         try:
-            app._run_batch(core.RunConfig(inputs=[], output=self.tmp))  # synchrone ici
+            app._run_batch(core.RunConfig(inputs=[], output=self.tmp))  # synchronous here
         finally:
             core.process_batch = orig
         kind, payload = app._result_q.get_nowait()
         app.destroy()
         self.assertEqual(kind, "error")
-        self.assertIn("lecteur", payload)
+        self.assertIn("reader", payload)
 
 
 class GuiBeidPlacement(unittest.TestCase):
-    """Refinements 1/4/5 côté GUI en mode beid : placeholder 3:1 (1/5 page),
-    pas de sélecteur d'image, canvas qui suit la fenêtre. Sauté sans affichage."""
+    """GUI-side refinements 1/4/5 in beid mode: 3:1 placeholder (1/5 page),
+    no image picker, canvas that follows the window. Skipped without a display."""
 
     def setUp(self):
         import types
@@ -403,7 +403,7 @@ class GuiBeidPlacement(unittest.TestCase):
             tkinter.Tk().destroy()
             import gui  # noqa: F401
         except Exception as exc:  # noqa: BLE001
-            self.skipTest(f"tkinter/GUI indisponible : {exc}")
+            self.skipTest(f"tkinter/GUI unavailable: {exc}")
         self.types = types
         self.tmp = Path(tempfile.mkdtemp())
 
@@ -419,18 +419,18 @@ class GuiBeidPlacement(unittest.TestCase):
         app.mode_var.set("beid")
         app._refresh_placement_section()
         app.update()
-        # mode beid : pas de sélecteur d'image (rangée non gérée par un manager)
+        # beid mode: no image picker (row not handled by a manager)
         self.assertEqual(app.image_row.winfo_manager(), "")
-        # placeholder = vignette 3:1, largeur = page/5
+        # placeholder = 3:1 vignette, width = page/5
         iw, ih = app._placeholder_size_pt()
         self.assertAlmostEqual(iw, 600 / 5)
         self.assertAlmostEqual(iw / ih, 3.0)
-        # un clic fixe la position (mode beid aussi, pas seulement image)
+        # a click sets the position (in beid mode too, not just image)
         fw, fh, ox, oy = app._frame_geom
         app._on_canvas_click(self.types.SimpleNamespace(x=ox + fw * 0.5, y=oy + fh * 0.5))
         self.assertIsNotNone(app.place_x)
         big = app.canvas.winfo_reqwidth()
-        # rétrécir la fenêtre -> le canvas rétrécit, proportions conservées
+        # shrink the window -> the canvas shrinks, proportions preserved
         app.geometry("520x680")
         app.update()
         small = app.canvas.winfo_reqwidth()

@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
-"""Signe en lot des PDF avec la carte d'identité belge (eID) via pyHanko.
+"""Batch-sign PDFs with the Belgian electronic identity card (eID) via pyHanko.
 
-Prérequis :
-    1. Middleware eID belge installé (https://eid.belgium.be) -> fournit
-       la bibliothèque PKCS#11 (libbeidpkcs11.so / .dylib / beidpkcs11.dll).
-    2. Lecteur de carte + carte insérée sur CETTE machine.
+Prerequisites:
+    1. Belgian eID middleware installed (https://eid.belgium.be) -> provides
+       the PKCS#11 library (libbeidpkcs11.so / .dylib / beidpkcs11.dll).
+    2. Card reader + card inserted on THIS machine.
     3. pip install "pyHanko[pkcs11,image-support]" pyhanko-beid-plugin
 
-Usage :
+Usage:
     python sign_pdfs_beid.py ./entree ./signes
     python sign_pdfs_beid.py ./entree ./signes --lib /usr/lib/libbeidpkcs11.so
     python sign_pdfs_beid.py doc1.pdf doc2.pdf ./signes --pades
 
-Important :
-    - On utilise le certificat de SIGNATURE (non-répudiation), juridiquement
-      équivalent à une signature manuscrite. À n'autoriser qu'à du code de confiance.
-    - La carte exige généralement le PIN pour CHAQUE signature
-      (CKA_ALWAYS_AUTHENTICATE sur la clé de non-répudiation) : prévois donc
-      une saisie de PIN par document.
-    - Le numéro de registre national est inscrit dans le certificat et donc
-      lisible dans chaque signature produite. Attention à la diffusion des PDF.
+Important:
+    - We use the SIGNATURE (non-repudiation) certificate, legally equivalent
+      to a handwritten signature. Only authorize trusted code to use it.
+    - The card generally requires the PIN for EACH signature
+      (CKA_ALWAYS_AUTHENTICATE on the non-repudiation key), so plan for one
+      PIN entry per document.
+    - The national register number is embedded in the certificate and is
+      therefore readable in every signature produced. Mind PDF distribution.
 """
 
 from __future__ import annotations
@@ -54,23 +54,23 @@ from pyhanko.sign import PdfSignatureMetadata, signers
 from pyhanko.sign.fields import SigFieldSpec, SigSeedSubFilter
 from pyhanko.stamp import StaticStampStyle, TextStampStyle
 
-# Depuis pyHanko >= 0.22, le support eID belge vit dans le plugin séparé.
-# Sur une très vieille install (< 0.22), remplacer par :
+# Since pyHanko >= 0.22, Belgian eID support lives in the separate plugin.
+# On a very old install (< 0.22), replace with:
 #   from pyhanko.sign.beid import BEIDSigner
 # from pyhanko_beid import BEIDSigner
-# On n'utilise plus open_beid_session() : il exige rigidement un token
-# au label « BELPIC », ce qui échoue selon le lecteur/middleware. Voir
-# open_eid_session() plus bas.
+# We no longer use open_beid_session(): it rigidly requires a token with the
+# label "BELPIC", which fails depending on the reader/middleware. See
+# open_eid_session() below.
 from pyhanko_beid.beid import BEIDSigner
 
 def default_pkcs11_lib() -> str:
-    """Chemin probable de la lib PKCS#11 eID selon l'OS."""
+    """Likely path of the eID PKCS#11 lib depending on the OS."""
     system = platform.system()
     if system == "Windows":
         return r"C:\Windows\System32\beidpkcs11.dll"
     if system == "Darwin":
         return "/usr/local/lib/libbeidpkcs11.dylib"
-    # Linux : l'emplacement varie selon la distribution.
+    # Linux: the location varies depending on the distribution.
     for candidate in (
         "/usr/lib/libbeidpkcs11.so",
         "/usr/local/lib/libbeidpkcs11.so",
@@ -82,53 +82,53 @@ def default_pkcs11_lib() -> str:
 
 
 def open_eid_session(lib_path: str):
-    """Ouvre une session PKCS#11 sur la carte eID, avec un diagnostic clair.
+    """Open a PKCS#11 session on the eID card, with clear diagnostics.
 
-    Remplace ``pyhanko_beid.open_beid_session()`` qui exige rigidement un
-    token au label « BELPIC ». Selon le lecteur ou la version du middleware,
-    le token peut porter un autre label (ou aucun), d'où l'erreur trompeuse
-    « No token matching criteria TokenCriteria(label='BELPIC') found » —
-    erreur qui survient AUSSI, à l'identique, quand aucune carte n'est lue.
+    Replaces ``pyhanko_beid.open_beid_session()`` which rigidly requires a
+    token with the label "BELPIC". Depending on the reader or middleware
+    version, the token may carry another label (or none), hence the misleading
+    error "No token matching criteria TokenCriteria(label='BELPIC') found" —
+    an error that ALSO occurs, identically, when no card can be read.
 
-    Stratégie : on choisit le token « BELPIC » s'il existe, sinon le premier
-    token présent ; et on émet un message actionnable si aucun lecteur ou
-    aucune carte n'est détecté. La session retournée (``token.open()``) est
-    identique à celle qu'utilise pyHanko en interne.
+    Strategy: we pick the "BELPIC" token if it exists, otherwise the first
+    token present; and we emit an actionable message if no reader or no card
+    is detected. The returned session (``token.open()``) is identical to the
+    one pyHanko uses internally.
     """
     try:
         lib = pkcs11.lib(lib_path)
-    except Exception as exc:  # noqa: BLE001 - on veut un message lisible
+    except Exception as exc:  # noqa: BLE001 - we want a readable message
         raise SystemExit(
-            f"Impossible de charger la bibliothèque PKCS#11 « {lib_path} » : {exc}"
+            f"Cannot load the PKCS#11 library \"{lib_path}\": {exc}"
         )
 
     slots = lib.get_slots(token_present=False)
     if not slots:
         raise SystemExit(
-            "Aucun lecteur de carte détecté.\n"
-            "  - Branche le lecteur eID.\n"
-            "  - Vérifie que le service pcscd tourne : "
+            "No card reader detected.\n"
+            "  - Plug in the eID reader.\n"
+            "  - Check that the pcscd service is running: "
             "sudo systemctl status pcscd"
         )
 
-    # Slots qui contiennent réellement un token (= une carte lisible).
+    # Slots that actually contain a token (= a readable card).
     tokens = []
     for slot in slots:
         try:
             tokens.append(slot.get_token())
         except PKCS11Error:
-            continue  # lecteur présent, mais pas de carte lisible dans ce slot
+            continue  # reader present, but no readable card in this slot
 
     if not tokens:
         readers = "\n".join(f"      - {s.slot_description.strip()}" for s in slots)
         raise SystemExit(
-            "Lecteur détecté, mais aucune carte n'a pu être lue :\n"
+            "Reader detected, but no card could be read:\n"
             f"{readers}\n"
-            "  Vérifie que :\n"
-            "    - la carte eID belge est insérée correctement et à fond ;\n"
-            "    - c'est bien une carte eID (pas une autre carte à puce) ;\n"
-            "    - le middleware eID est installé et le service pcscd tourne.\n"
-            "  Réinsère la carte puis relance la commande."
+            "  Check that:\n"
+            "    - the Belgian eID card is inserted correctly and fully;\n"
+            "    - it is indeed an eID card (not another smart card);\n"
+            "    - the eID middleware is installed and the pcscd service is running.\n"
+            "  Re-insert the card then run the command again."
         )
 
     chosen = next(
@@ -138,49 +138,49 @@ def open_eid_session(lib_path: str):
     if chosen is None:
         chosen = tokens[0]
         print(
-            f"  Note : aucun token « BELPIC » trouvé ; utilisation du token "
-            f"présent (label={chosen.label!r}).",
+            f"  Note: no \"BELPIC\" token found; using the token "
+            f"present (label={chosen.label!r}).",
             file=sys.stderr,
         )
 
-    print(f"  Carte détectée : label={chosen.label!r}, serial={chosen.serial!r}")
+    print(f"  Card detected: label={chosen.label!r}, serial={chosen.serial!r}")
     return chosen.open()
 
 
-# --- Apparence de la signature visible (vignette en bas à droite) ---------
-_STAMP_W = 210        # largeur de la vignette par défaut (points PDF, 1 pt = 1/72")
-_STAMP_H = 62         # hauteur de la vignette par défaut (3 lignes de texte)
-_STAMP_MARGIN = 24    # marge depuis le coin inférieur droit de la page
-_PHOTO_BAND_FRAC = 0.2  # part de la largeur réservée à la photo (0.2×210 = 42, inchangé)
+# --- Visible signature appearance (vignette at bottom-right) ---------------
+_STAMP_W = 210        # default vignette width (PDF points, 1 pt = 1/72")
+_STAMP_H = 62         # default vignette height (3 lines of text)
+_STAMP_MARGIN = 24    # margin from the page's lower-right corner
+_PHOTO_BAND_FRAC = 0.2  # share of the width reserved for the photo (0.2×210 = 42, unchanged)
 
-# Vignette placée librement (mode beid avec position choisie) : la taille exacte
-# n'est pas connue à l'avance, on dessine donc un cadre 3:1 (paysage) large d'1/5
-# de la page (hauteur = largeur / 3).
+# Freely placed vignette (beid mode with a chosen position): the exact size is
+# not known in advance, so we draw a 3:1 (landscape) box one-fifth as wide as
+# the page (height = width / 3).
 _VIGNETTE_W_FRAC = 1 / 5
 _VIGNETTE_ASPECT = 3.0
 
 
 def vignette_size_pt(page_w: float) -> tuple[float, float]:
-    """Taille (largeur, hauteur) en points de la vignette placée librement :
-    largeur = page_w/5, hauteur = largeur/3 (ratio 3:1 paysage)."""
+    """Size (width, height) in points of the freely placed vignette:
+    width = page_w/5, height = width/3 (3:1 landscape ratio)."""
     w = page_w * _VIGNETTE_W_FRAC
     return (w, w / _VIGNETTE_ASPECT)
 
 
 @dataclasses.dataclass
 class CardIdentity:
-    """Données lues sur la carte pour la vignette de signature."""
+    """Data read from the card for the signature vignette."""
 
-    name: str                      # ex. « Sébastien Denooz »
-    photo: Image.Image | None      # portrait eID (ou None si illisible)
+    name: str                      # e.g. "Sébastien Denooz"
+    photo: Image.Image | None      # eID portrait (or None if unreadable)
 
 
 def read_card_identity(session) -> CardIdentity:
-    """Lit le nom (certificat de signature) et la photo (objet ``PHOTO_FILE``)
-    sur la carte eID via la session PKCS#11 déjà ouverte.
+    """Read the name (signature certificate) and the photo (``PHOTO_FILE``
+    object) from the eID card via the already-open PKCS#11 session.
 
-    Ces deux lectures ne nécessitent PAS le PIN ; elles peuvent donc se faire
-    une seule fois, avant la boucle de signature.
+    Neither read requires the PIN; they can therefore be done once, before the
+    signing loop.
     """
     first = last = common = None
     try:
@@ -199,9 +199,9 @@ def read_card_identity(session) -> CardIdentity:
     if first and last:
         name = f"{first} {last}"
     elif common:
-        name = common.split(" (")[0]  # retire le suffixe « (Signature) »
+        name = common.split(" (")[0]  # strip the "(Signature)" suffix
     else:
-        name = "le titulaire de la carte"
+        name = "the cardholder"
 
     photo = None
     try:
@@ -209,9 +209,9 @@ def read_card_identity(session) -> CardIdentity:
             {Attribute.CLASS: ObjectClass.DATA, Attribute.LABEL: "PHOTO_FILE"}
         ):
             data = bytes(obj[Attribute.VALUE])
-            if data[:2] == b"\xff\xd8":  # en-tête JPEG
+            if data[:2] == b"\xff\xd8":  # JPEG header
                 photo = Image.open(io.BytesIO(data))
-                photo.load()  # décode maintenant : la session pourra se fermer
+                photo.load()  # decode now: the session may then be closed
             break
     except (PKCS11Error, OSError):
         photo = None
@@ -220,8 +220,8 @@ def read_card_identity(session) -> CardIdentity:
 
 
 def _page_mediabox(writer, page_index: int) -> list[float]:
-    """MediaBox de la page `page_index` (0-based, -1 = dernière), avec héritage
-    depuis l'arbre de pages."""
+    """MediaBox of page `page_index` (0-based, -1 = last), with inheritance
+    from the page tree."""
     page_ref, _ = writer.find_page_for_modification(page_index)
     node = page_ref.get_object()
     for _ in range(50):
@@ -234,16 +234,16 @@ def _page_mediabox(writer, page_index: int) -> list[float]:
         if parent is None:
             break
         node = parent.get_object()
-    return [0.0, 0.0, 595.276, 841.89]  # A4 par défaut
+    return [0.0, 0.0, 595.276, 841.89]  # A4 default
 
 
 def _last_page_mediabox(writer) -> list[float]:
-    """MediaBox de la dernière page (avec héritage du tree de pages)."""
+    """MediaBox of the last page (with inheritance from the page tree)."""
     return _page_mediabox(writer, -1)
 
 
 def _last_page_box(writer) -> tuple[float, float, float, float]:
-    """Rectangle de la vignette, calé en bas à droite de la dernière page."""
+    """Vignette rectangle, anchored bottom-right of the last page."""
     mb = _last_page_mediabox(writer)
     x1 = mb[2] - _STAMP_MARGIN
     x0 = max(mb[0] + 4, x1 - _STAMP_W)
@@ -255,24 +255,23 @@ def _last_page_box(writer) -> tuple[float, float, float, float]:
 def build_stamp_style(
     identity: CardIdentity, box_w: float = _STAMP_W, box_h: float = _STAMP_H
 ) -> TextStampStyle:
-    """Construit l'apparence : photo à gauche, « Signed by ... » à droite.
+    """Build the appearance: photo on the left, "Signed by ..." on the right.
 
-    Les marges sont PROPORTIONNELLES à la largeur du cadre (box_w) : la bande
-    photo vaut ``_PHOTO_BAND_FRAC × box_w`` (soit 42 pt pour le cadre par défaut
-    de 210 pt — inchangé), ce qui permet à la même vignette de tenir dans un
-    cadre plus petit (mode beid avec position libre) sans déborder.
+    Margins are PROPORTIONAL to the box width (box_w): the photo band equals
+    ``_PHOTO_BAND_FRAC × box_w`` (i.e. 42 pt for the default 210 pt box —
+    unchanged), which lets the same vignette fit in a smaller box (beid mode
+    with a free position) without overflowing.
 
-    Une NOUVELLE instance est créée par document : l'image de fond est liée au
-    writer lors du rendu, on évite donc de réutiliser le même objet entre PDF.
+    A NEW instance is created per document: the background image is bound to
+    the writer at render time, so we avoid reusing the same object across PDFs.
     """
-    # Vignette en 3 lignes : « Signed by: » / nom / « at <date> ».
-    # Le nom est échappé (%%) au cas où il contiendrait un %, tandis que
-    # %(ts)s est remplacé par pyHanko par la date courante (format ci-dessous)
-    # au moment de la signature.
+    # Vignette in 3 lines: "Signed by:" / name / "at <date>".
+    # The name is escaped (%%) in case it contains a %, while %(ts)s is
+    # replaced by pyHanko with the current date (format below) at signing time.
     safe_name = identity.name.replace("%", "%%")
     text = f"Signed by:\n{safe_name}\nat %(ts)s"
     text_style = dataclasses.replace(TextStampStyle().text_box_style, font_size=10)
-    band = _PHOTO_BAND_FRAC * box_w   # bande photo, à gauche
+    band = _PHOTO_BAND_FRAC * box_w   # photo band, on the left
 
     if identity.photo is not None:
         return TextStampStyle(
@@ -296,7 +295,7 @@ def build_stamp_style(
             border_width=0,
         )
 
-    # Pas de photo lisible : on se rabat sur un texte seul, centré.
+    # No readable photo: fall back to text only, centered.
     return TextStampStyle(
         stamp_text=text,
         timestamp_format="%d/%m/%Y",
@@ -312,7 +311,7 @@ def build_stamp_style(
 
 
 def collect_pdfs(inputs: list[str]) -> list[Path]:
-    """Résout les arguments d'entrée en une liste de fichiers PDF."""
+    """Resolve the input arguments into a list of PDF files."""
     pdfs: list[Path] = []
     for raw in inputs:
         path = Path(raw)
@@ -321,7 +320,7 @@ def collect_pdfs(inputs: list[str]) -> list[Path]:
         elif path.suffix.lower() == ".pdf" and path.is_file():
             pdfs.append(path)
         else:
-            print(f"  Ignoré (pas un PDF) : {path}", file=sys.stderr)
+            print(f"  Ignored (not a PDF): {path}", file=sys.stderr)
     return pdfs
 
 
@@ -335,13 +334,13 @@ def sign_one(
     page_index: int | None = None,
     pos: tuple[float, float] | None = None,
 ) -> None:
-    """Signe un PDF (signature incrémentale) et y appose la vignette visible
-    (photo + « Signed by ... »).
+    """Sign a PDF (incremental signature) and stamp the visible vignette onto
+    it (photo + "Signed by ...").
 
-    Par défaut (``pos`` None) la vignette est calée en bas à droite de la
-    DERNIÈRE page (comportement historique). Si ``pos`` est fourni, elle est
-    placée sur la page ``page_index`` (0-based), coin inférieur gauche à ``pos``
-    points, dans un cadre 3:1 large d'1/5 de la page (cf. ``vignette_size_pt``).
+    By default (``pos`` None) the vignette is anchored bottom-right of the LAST
+    page (historical behavior). If ``pos`` is provided, it is placed on page
+    ``page_index`` (0-based), lower-left corner at ``pos`` points, in a 3:1 box
+    one-fifth as wide as the page (cf. ``vignette_size_pt``).
     """
     meta = PdfSignatureMetadata(
         field_name=field_name,
@@ -350,11 +349,11 @@ def sign_one(
         ),
     )
     with src.open("rb") as inf:
-        # strict=False : accepte les PDF à références croisées « hybrides »
-        # (table xref classique + flux xref dans le même fichier), produits
-        # par certains outils pour rétro-compatibilité. En mode strict,
-        # pyHanko refuse de les signer
-        # (« hybrid cross-reference sections while hybrid xrefs are disabled »).
+        # strict=False: accept PDFs with "hybrid" cross-reference sections
+        # (classic xref table + xref stream in the same file), produced by
+        # some tools for backward compatibility. In strict mode, pyHanko
+        # refuses to sign them
+        # ("hybrid cross-reference sections while hybrid xrefs are disabled").
         writer = IncrementalPdfFileWriter(inf, strict=False)
         if pos is None:
             on_page, box = -1, _last_page_box(writer)
@@ -375,12 +374,12 @@ def sign_one(
 
 
 # =========================================================================
-#  Validation par rapport à un modèle (« template »)
+#  Validation against a template
 # =========================================================================
 
 def _iter_pages(node, inherited_mb=None):
-    """Parcourt l'arbre de pages dans l'ordre et yielde (page, mediabox), en
-    propageant le /MediaBox hérité d'un nœud parent."""
+    """Walk the page tree in order and yield (page, mediabox), propagating the
+    /MediaBox inherited from a parent node."""
     node = node.get_object()
     mb = node.raw_get("/MediaBox").get_object() if "/MediaBox" in node else inherited_mb
     if "/Kids" in node:
@@ -392,13 +391,13 @@ def _iter_pages(node, inherited_mb=None):
 
 def _mediabox_wh(mb) -> tuple[float, float]:
     if mb is None:
-        return (595.276, 841.89)  # A4 par défaut
+        return (595.276, 841.89)  # A4 default
     vals = [float(v.get_object() if hasattr(v, "get_object") else v) for v in mb]
     return (vals[2] - vals[0], vals[3] - vals[1])
 
 
 def page_dimensions(pdf_path) -> list[tuple[float, float]]:
-    """Dimensions (largeur, hauteur) en points de chaque page, dans l'ordre."""
+    """Dimensions (width, height) in points of each page, in order."""
     with open(pdf_path, "rb") as f:
         reader = PdfFileReader(f, strict=False)
         return [_mediabox_wh(mb) for _, mb in _iter_pages(reader.root["/Pages"])]
@@ -406,7 +405,7 @@ def page_dimensions(pdf_path) -> list[tuple[float, float]]:
 
 @dataclasses.dataclass
 class ValidationResult:
-    """Résultat de la validation d'un fichier face au modèle."""
+    """Result of validating a file against the template."""
 
     path: Path
     ok: bool
@@ -416,61 +415,61 @@ class ValidationResult:
 def validate_against_template(
     template_dims: list[tuple[float, float]], pdf_path
 ) -> ValidationResult:
-    """Vérifie qu'un PDF a le MÊME nombre de pages ET des dimensions par page
-    EXACTEMENT identiques au modèle (aucune tolérance)."""
+    """Check that a PDF has the SAME page count AND per-page dimensions
+    EXACTLY identical to the template (no tolerance)."""
     path = Path(pdf_path)
     try:
         dims = page_dimensions(path)
     except Exception as exc:  # noqa: BLE001
-        return ValidationResult(path, False, f"illisible ({exc})")
+        return ValidationResult(path, False, f"unreadable ({exc})")
     if len(dims) != len(template_dims):
         return ValidationResult(
-            path, False, f"{len(dims)} page(s), le modèle en a {len(template_dims)}"
+            path, False, f"{len(dims)} page(s), the template has {len(template_dims)}"
         )
     for i, (d, t) in enumerate(zip(dims, template_dims), start=1):
         if d != t:
             return ValidationResult(
                 path,
                 False,
-                f"page {i} : {d[0]:.2f}×{d[1]:.2f} pt ≠ modèle {t[0]:.2f}×{t[1]:.2f} pt",
+                f"page {i}: {d[0]:.2f}×{d[1]:.2f} pt ≠ template {t[0]:.2f}×{t[1]:.2f} pt",
             )
     return ValidationResult(path, True, "")
 
 
 def validate_files(template_path, pdf_paths) -> list[ValidationResult]:
-    """Valide une liste de PDF face au modèle (lu une seule fois)."""
+    """Validate a list of PDFs against the template (read once)."""
     template_dims = page_dimensions(template_path)
     return [validate_against_template(template_dims, p) for p in pdf_paths]
 
 
 # =========================================================================
-#  Mode « image » : insertion d'une image de signature
+#  "image" mode: inserting a signature image
 # =========================================================================
-_IMG_TARGET_W_PT = 150.0  # largeur d'insertion par défaut (points, ratio conservé)
+_IMG_TARGET_W_PT = 150.0  # default insertion width (points, ratio preserved)
 
 
 def image_size_pt(image_path) -> tuple[float, float]:
-    """Taille (largeur, hauteur) en points de l'image insérée : largeur fixe
-    (_IMG_TARGET_W_PT), hauteur déduite du ratio."""
+    """Size (width, height) in points of the inserted image: fixed width
+    (_IMG_TARGET_W_PT), height derived from the ratio."""
     with Image.open(image_path) as im:
         w_px, h_px = im.size
     return (_IMG_TARGET_W_PT, _IMG_TARGET_W_PT * h_px / w_px)
 
 
 def insert_image_one(src, dst, image_path, page_index: int, x: float, y: float) -> None:
-    """Insère l'image sur la page `page_index` (0-based, -1 = dernière) avec son
-    coin inférieur gauche à (x, y) points depuis le coin inférieur gauche de la
-    page. Mise à jour incrémentale — aucune carte requise."""
+    """Insert the image on page `page_index` (0-based, -1 = last) with its
+    lower-left corner at (x, y) points from the page's lower-left corner.
+    Incremental update — no card required."""
     img = Image.open(image_path)
     img.load()
     w_pt, h_pt = image_size_pt(image_path)
-    n_pages = len(page_dimensions(src))  # message clair si la page est hors limites
+    n_pages = len(page_dimensions(src))  # clear message if the page is out of range
     if not (-n_pages <= page_index < n_pages):
         shown = page_index + 1 if page_index >= 0 else page_index
-        raise ValueError(f"page {shown} hors limites (le document a {n_pages} page(s))")
+        raise ValueError(f"page {shown} out of range (the document has {n_pages} page(s))")
     with open(src, "rb") as inf:
         writer = IncrementalPdfFileWriter(inf, strict=False)
-        mb = _page_mediabox(writer, page_index)  # (x, y) relatifs au coin page
+        mb = _page_mediabox(writer, page_index)  # (x, y) relative to the page corner
         style = StaticStampStyle(
             background=images.PdfImage(img),
             background_opacity=1.0,
@@ -480,7 +479,7 @@ def insert_image_one(src, dst, image_path, page_index: int, x: float, y: float) 
                 margins=Margins(),
                 inner_content_scaling=InnerScaling.STRETCH_TO_FIT,
             ),
-            border_width=0,   # pas de bordure noire autour de l'image insérée
+            border_width=0,   # no black border around the inserted image
         )
         stamp = style.create_stamp(writer, BoxConstraints(width=w_pt, height=h_pt), {})
         stamp.apply(page_index, int(round(mb[0] + x)), int(round(mb[1] + y)))
@@ -490,12 +489,12 @@ def insert_image_one(src, dst, image_path, page_index: int, x: float, y: float) 
 
 
 # =========================================================================
-#  Calcul de placement (partagé avec la GUI, testable sans tkinter)
+#  Placement math (shared with the GUI, testable without tkinter)
 # =========================================================================
 
 def fit_frame(page_w, page_h, max_w, max_h) -> tuple[float, float]:
-    """Dimensions (l, h) d'un cadre respectant le ratio de la page et tenant
-    dans (max_w, max_h)."""
+    """Dimensions (w, h) of a frame preserving the page ratio and fitting
+    within (max_w, max_h)."""
     scale = min(max_w / page_w, max_h / page_h)
     return (page_w * scale, page_h * scale)
 
@@ -503,8 +502,8 @@ def fit_frame(page_w, page_h, max_w, max_h) -> tuple[float, float]:
 def frame_click_to_pdf_xy(
     page_w, page_h, frame_w, frame_h, click_x, click_y
 ) -> tuple[float, float]:
-    """Convertit un clic dans le cadre (origine haut-gauche, comme tkinter) en
-    point PDF (origine bas-gauche), en points."""
+    """Convert a click in the frame (top-left origin, like tkinter) into a PDF
+    point (bottom-left origin), in points."""
     pdf_x = click_x / frame_w * page_w
     pdf_y = (frame_h - click_y) / frame_h * page_h
     return (pdf_x, pdf_y)
@@ -513,22 +512,21 @@ def frame_click_to_pdf_xy(
 def pdf_rect_to_frame_rect(
     page_w, page_h, frame_w, frame_h, x, y, img_w, img_h
 ) -> tuple[float, float, float, float]:
-    """Rectangle (left, top, width, height) en pixels-cadre pour dessiner à
-    l'échelle une image de taille (img_w, img_h) pt dont le coin inférieur
-    gauche PDF est (x, y)."""
+    """Rectangle (left, top, width, height) in frame pixels to draw, to scale,
+    an image of size (img_w, img_h) pt whose PDF lower-left corner is (x, y)."""
     sx, sy = frame_w / page_w, frame_h / page_h
     return (x * sx, frame_h - (y + img_h) * sy, img_w * sx, img_h * sy)
 
 
 def render_page_image(pdf_path, page_index: int, px_width: int = 900):
-    """Rendu bitmap de la page `page_index` (0-based) en image Pillow
-    (~px_width de large, ratio conservé), ou ``None`` si le rendu échoue.
+    """Bitmap render of page `page_index` (0-based) as a Pillow image
+    (~px_width wide, ratio preserved), or ``None`` if rendering fails.
 
-    Essaie d'abord **pypdfium2** (moteur PDFium embarqué DANS le paquet : aucune
-    dépendance externe, fonctionne tel quel dans l'exécutable PyInstaller sous
-    Windows/Linux/macOS), puis se rabat sur **pdftoppm** (poppler) s'il est
-    installé sur la machine. Utilisé comme fond du cadre de sélection ; le code
-    appelant retombe sur un cadre blanc si ``None``.
+    Tries **pypdfium2** first (PDFium engine bundled INSIDE the package: no
+    external dependency, works as-is in the PyInstaller executable on
+    Windows/Linux/macOS), then falls back to **pdftoppm** (poppler) if it is
+    installed on the machine. Used as the background of the selection frame;
+    the calling code falls back to a white frame if ``None``.
     """
     img = _render_with_pdfium(pdf_path, page_index, px_width)
     if img is not None:
@@ -537,13 +535,13 @@ def render_page_image(pdf_path, page_index: int, px_width: int = 900):
 
 
 def _render_with_pdfium(pdf_path, page_index: int, px_width: int):
-    """Rendu via pypdfium2 (PDFium embarqué). ``None`` si indisponible/échec.
+    """Render via pypdfium2 (bundled PDFium). ``None`` if unavailable/failed.
 
-    L'import est PARESSEUX : le cœur reste importable sans pypdfium2 (ex. le
-    binaire CLI headless, où le paquet est volontairement exclu)."""
+    The import is LAZY: the core stays importable without pypdfium2 (e.g. the
+    headless CLI binary, where the package is deliberately excluded)."""
     try:
         import pypdfium2 as pdfium
-    except Exception:  # noqa: BLE001 - paquet absent
+    except Exception:  # noqa: BLE001 - package missing
         return None
     pdf = None
     try:
@@ -551,12 +549,12 @@ def _render_with_pdfium(pdf_path, page_index: int, px_width: int):
         if not (0 <= page_index < len(pdf)):
             return None
         page = pdf[page_index]
-        w_pt, _ = page.get_size()                 # taille en points (1 pt = 1/72")
+        w_pt, _ = page.get_size()                 # size in points (1 pt = 1/72")
         scale = (px_width / w_pt) if w_pt else 1.0  # scale=1.0 -> 72 dpi (px = pt)
         img = page.render(scale=scale).to_pil().convert("RGB")
         img.load()
         return img
-    except Exception:  # noqa: BLE001 - rendu impossible -> fallback poppler
+    except Exception:  # noqa: BLE001 - render impossible -> poppler fallback
         return None
     finally:
         if pdf is not None:
@@ -567,8 +565,8 @@ def _render_with_pdfium(pdf_path, page_index: int, px_width: int):
 
 
 def _render_with_pdftoppm(pdf_path, page_index: int, px_width: int):
-    """Rendu via `pdftoppm` (poppler) s'il est présent sur la machine. ``None``
-    sinon. Repli historique quand pypdfium2 est indisponible."""
+    """Render via `pdftoppm` (poppler) if it is present on the machine. ``None``
+    otherwise. Historical fallback when pypdfium2 is unavailable."""
     page_no = page_index + 1
     with tempfile.TemporaryDirectory() as td:
         prefix = os.path.join(td, "page")
@@ -590,9 +588,9 @@ def _render_with_pdftoppm(pdf_path, page_index: int, px_width: int):
 
 
 def unique_output_path(out_dir, stem: str, suffix: str = "_signe") -> Path:
-    """Chemin de sortie libre : ``{stem}{suffix}.pdf`` puis, en cas de collision,
-    ``{stem}{suffix} - 1.pdf``, ``- 2``, … jusqu'à un nom inexistant. Ne réécrit
-    JAMAIS un fichier déjà présent."""
+    """Free output path: ``{stem}{suffix}.pdf`` then, on collision,
+    ``{stem}{suffix} - 1.pdf``, ``- 2``, … until a non-existent name. NEVER
+    overwrites an existing file."""
     out_dir = Path(out_dir)
     base = f"{stem}{suffix}"
     candidate = out_dir / f"{base}.pdf"
@@ -604,24 +602,24 @@ def unique_output_path(out_dir, stem: str, suffix: str = "_signe") -> Path:
 
 
 # =========================================================================
-#  Configuration d'exécution + traitement par lot (partagé CLI / GUI)
+#  Run configuration + batch processing (shared CLI / GUI)
 # =========================================================================
 
 @dataclasses.dataclass
 class RunConfig:
-    """Paramètres d'une exécution, identiques pour la CLI et la GUI."""
+    """Parameters of a run, identical for the CLI and the GUI."""
 
     inputs: list[Path]
     output: Path
-    mode: str = "beid"               # "beid" (carte eID + vignette) | "image"
+    mode: str = "beid"               # "beid" (eID card + vignette) | "image"
     template: Path | None = None
     pades: bool = False
     field: str = "Signature"
     lib: str | None = None
     image_path: Path | None = None
-    # Page (1-based) + position (points, coin bas-gauche). None = non spécifié :
-    # en mode image on retombe sur page 1 / (0, 0) ; en mode beid, l'absence de
-    # position déclenche la vignette par défaut (bas à droite, dernière page).
+    # Page (1-based) + position (points, bottom-left corner). None = unspecified:
+    # in image mode we fall back to page 1 / (0, 0); in beid mode, the absence of
+    # a position triggers the default vignette (bottom-right, last page).
     page: int | None = None
     x: float | None = None
     y: float | None = None
@@ -629,7 +627,7 @@ class RunConfig:
 
 @dataclasses.dataclass
 class DocResult:
-    """Issue du traitement d'un document."""
+    """Outcome of processing a document."""
 
     path: Path
     output: Path | None
@@ -638,28 +636,28 @@ class DocResult:
 
 
 def validate_config(cfg: RunConfig) -> None:
-    """Vérifie la cohérence d'une RunConfig ; lève ValueError sinon."""
+    """Check the consistency of a RunConfig; raises ValueError otherwise."""
     if not cfg.inputs:
-        raise ValueError("Aucun PDF d'entrée.")
+        raise ValueError("No input PDF.")
     if cfg.output is None:
-        raise ValueError("Dossier de sortie manquant (--output).")
+        raise ValueError("Missing output folder (--output).")
     if cfg.mode not in ("beid", "image"):
-        raise ValueError(f"Mode inconnu : {cfg.mode!r} (attendu beid|image).")
+        raise ValueError(f"Unknown mode: {cfg.mode!r} (expected beid|image).")
     if cfg.mode == "image":
         if not cfg.image_path:
-            raise ValueError("--image-path est requis en mode image.")
+            raise ValueError("--image-path is required in image mode.")
         if not Path(cfg.image_path).exists():
-            raise ValueError(f"Image introuvable : {cfg.image_path}")
+            raise ValueError(f"Image not found: {cfg.image_path}")
         if cfg.page is not None and cfg.page < 1:
-            raise ValueError("--page doit être >= 1.")
+            raise ValueError("--page must be >= 1.")
     if cfg.template and not Path(cfg.template).exists():
-        raise ValueError(f"Modèle introuvable : {cfg.template}")
+        raise ValueError(f"Template not found: {cfg.template}")
 
 
 def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
-    """Valide (si un modèle est fourni) puis traite chaque fichier selon le
-    mode. Renvoie un DocResult par fichier d'entrée. `on_progress` est appelé
-    après chaque document (utile pour la GUI)."""
+    """Validate (if a template is provided) then process each file according to
+    the mode. Returns one DocResult per input file. `on_progress` is called
+    after each document (useful for the GUI)."""
     results: list[DocResult] = []
     template_dims = page_dimensions(cfg.template) if cfg.template else None
 
@@ -671,8 +669,8 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
 
     Path(cfg.output).mkdir(parents=True, exist_ok=True)
 
-    # Position éventuelle (None = non spécifiée). Mode beid : si fournie, vignette
-    # placée librement ; sinon vignette par défaut (bas à droite, dernière page).
+    # Optional position (None = unspecified). beid mode: if provided, vignette
+    # placed freely; otherwise default vignette (bottom-right, last page).
     placement = cfg.x is not None and cfg.y is not None
     page = cfg.page or 1
     x = cfg.x if cfg.x is not None else 0.0
@@ -683,28 +681,28 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
         if template_dims is not None:
             verdict = validate_against_template(template_dims, src)
             if not verdict.ok:
-                res = DocResult(src, None, False, f"rejeté — {verdict.reason}")
+                res = DocResult(src, None, False, f"rejected — {verdict.reason}")
                 results.append(res)
                 if on_progress:
                     on_progress(res)
                 continue
-        dst = unique_output_path(cfg.output, src.stem)  # ne réécrit jamais
+        dst = unique_output_path(cfg.output, src.stem)  # never overwrites
         try:
             if cfg.mode == "beid":
                 if placement:
                     sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades, identity,
                              page_index=page - 1, pos=(x, y))
-                    detail = f"signé eID — vignette page {page} @ ({x:.0f}, {y:.0f})"
+                    detail = f"signed (eID) — vignette page {page} @ ({x:.0f}, {y:.0f})"
                 else:
                     sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades, identity)
-                    detail = "signé eID — vignette"
+                    detail = "signed (eID) — vignette"
                 detail += " (PAdES)" if cfg.pades else ""
             else:
                 insert_image_one(src, dst, cfg.image_path, page - 1, x, y)
-                detail = f"image insérée — page {page} @ ({x:.0f}, {y:.0f})"
+                detail = f"image inserted — page {page} @ ({x:.0f}, {y:.0f})"
             res = DocResult(src, dst, True, detail)
-        except Exception as exc:  # noqa: BLE001 - on continue le lot
-            res = DocResult(src, None, False, f"échec — {exc}")
+        except Exception as exc:  # noqa: BLE001 - continue the batch
+            res = DocResult(src, None, False, f"failed — {exc}")
         results.append(res)
         if on_progress:
             on_progress(res)
@@ -712,75 +710,75 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
 
 
 def print_summary(results: list[DocResult], out_dir) -> None:
-    """Affiche un tableau récapitulatif du lot."""
-    print("\n=== Récapitulatif ===")
+    """Print a summary table of the batch."""
+    print("\n=== Summary ===")
     width = max((len(r.path.name) for r in results), default=8)
     for r in results:
-        flag = "OK   " if r.ok else "ÉCHEC"
+        flag = "OK   " if r.ok else "FAIL "
         print(f"  [{flag}] {r.path.name:<{width}}  {r.detail}")
     ok = sum(1 for r in results if r.ok)
-    print(f"\n{ok}/{len(results)} document(s) traité(s) avec succès. Sortie : {out_dir}")
+    print(f"\n{ok}/{len(results)} document(s) processed successfully. Output: {out_dir}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Signe (carte eID belge) ou tamponne une image, en lot, sur des PDF."
+        description="Batch-sign (Belgian eID card) or stamp an image onto PDFs."
     )
-    # Positionnels conservés pour la rétro-compatibilité : « entrées… sortie ».
+    # Positionals kept for backward compatibility: "inputs… output".
     parser.add_argument(
         "inputs",
         nargs="*",
-        help="(Ancien style) entrées… puis dossier de sortie. Préférer --input/--output.",
+        help="(Legacy style) inputs… then output folder. Prefer --input/--output.",
     )
     parser.add_argument(
-        "--gui", action="store_true", help="Lance l'interface graphique (CustomTkinter)."
+        "--gui", action="store_true", help="Launch the graphical interface (CustomTkinter)."
     )
     parser.add_argument(
-        "--template", default=None, help="PDF modèle pour valider les fichiers d'entrée."
+        "--template", default=None, help="Template PDF to validate the input files."
     )
     parser.add_argument(
-        "--input", nargs="+", default=None, help="Fichier(s)/dossier(s) PDF à traiter."
+        "--input", nargs="+", default=None, help="PDF file(s)/folder(s) to process."
     )
-    parser.add_argument("--output", default=None, help="Dossier de sortie.")
+    parser.add_argument("--output", default=None, help="Output folder.")
     parser.add_argument(
         "--mode",
         choices=("beid", "image"),
         default="beid",
-        help="Mode : beid (carte eID + vignette) ou image (insertion d'image).",
+        help="Mode: beid (eID card + vignette) or image (image insertion).",
     )
     parser.add_argument(
         "--image-path", dest="image_path", default=None,
-        help="Image à insérer (requis en --mode image).",
+        help="Image to insert (required in --mode image).",
     )
     parser.add_argument(
         "--page", type=int, default=None,
-        help="Page cible (1-based). Image : page d'insertion. beid : page de la vignette.",
+        help="Target page (1-based). Image: insertion page. beid: vignette page.",
     )
     parser.add_argument(
         "--x", type=float, default=None,
-        help="Position X (points, depuis le coin inférieur gauche de la page). "
-             "En mode beid, --x/--y placent la vignette (sinon : bas à droite).",
+        help="X position (points, from the page's lower-left corner). "
+             "In beid mode, --x/--y place the vignette (otherwise: bottom-right).",
     )
     parser.add_argument(
         "--y", type=float, default=None,
-        help="Position Y (points, depuis le coin inférieur gauche de la page).",
+        help="Y position (points, from the page's lower-left corner).",
     )
-    parser.add_argument("--lib", default=None, help="Chemin vers la lib PKCS#11 eID.")
+    parser.add_argument("--lib", default=None, help="Path to the eID PKCS#11 lib.")
     parser.add_argument(
-        "--field", default="Signature", help="Nom de base du champ de signature (mode beid)."
+        "--field", default="Signature", help="Base name of the signature field (beid mode)."
     )
     parser.add_argument(
-        "--pades", action="store_true", help="Signature PAdES (archivage long terme)."
+        "--pades", action="store_true", help="PAdES signature (long-term archiving)."
     )
     return parser
 
 
 def resolve_config(args) -> RunConfig:
-    """Construit une RunConfig depuis les arguments argparse, en acceptant à la
-    fois les nouveaux drapeaux (--input/--output) et l'ancien style positionnel."""
+    """Build a RunConfig from the argparse arguments, accepting both the new
+    flags (--input/--output) and the legacy positional style."""
     raw_inputs = list(args.input) if args.input else []
     output = args.output
-    if not raw_inputs and args.inputs:  # rétro-compat : positionnels
+    if not raw_inputs and args.inputs:  # backward compat: positionals
         if output is not None:
             raw_inputs = list(args.inputs)
         else:
@@ -812,10 +810,10 @@ def main() -> int:
             from gui import launch_gui
         except Exception as exc:  # noqa: BLE001
             print(
-                f"Impossible de charger la GUI : {exc}\n"
-                "Installe CustomTkinter et le support Tk :\n"
+                f"Cannot load the GUI: {exc}\n"
+                "Install CustomTkinter and Tk support:\n"
                 "  pip install customtkinter\n"
-                "  sudo apt install python3-tk   (ou python3.14-tk)",
+                "  sudo apt install python3-tk   (or python3.14-tk)",
                 file=sys.stderr,
             )
             return 1
@@ -830,28 +828,28 @@ def main() -> int:
         lib_path = cfg.lib or default_pkcs11_lib()
         if not Path(lib_path).exists():
             print(
-                f"Bibliothèque PKCS#11 introuvable : {lib_path}\n"
-                "Installe le middleware eID ou précise le chemin avec --lib.",
+                f"PKCS#11 library not found: {lib_path}\n"
+                "Install the eID middleware or specify the path with --lib.",
                 file=sys.stderr,
             )
             return 1
         placed = cfg.x is not None and cfg.y is not None
         where = (f"vignette page {cfg.page or 1} @ ({cfg.x:.0f}, {cfg.y:.0f})"
-                 if placed else "vignette bas-droite, dernière page")
-        print(f"Mode : eID — {where}. Lib PKCS#11 : {lib_path}")
-        print(f"{len(cfg.inputs)} PDF. Le PIN sera demandé pour chaque document.")
+                 if placed else "vignette bottom-right, last page")
+        print(f"Mode: eID — {where}. PKCS#11 lib: {lib_path}")
+        print(f"{len(cfg.inputs)} PDF(s). The PIN will be requested for each document.")
     else:
         print(
-            f"Mode : image — {cfg.image_path} "
+            f"Mode: image — {cfg.image_path} "
             f"(page {cfg.page or 1}, x={cfg.x or 0:.0f}, y={cfg.y or 0:.0f})."
         )
-        print(f"{len(cfg.inputs)} PDF.")
+        print(f"{len(cfg.inputs)} PDF(s).")
     if cfg.template:
-        print(f"Validation contre le modèle : {cfg.template}")
+        print(f"Validation against the template: {cfg.template}")
     print()
 
     def progress(r: DocResult) -> None:
-        print(f"  [{'OK' if r.ok else 'ÉCHEC'}] {r.path.name} — {r.detail}")
+        print(f"  [{'OK' if r.ok else 'FAIL'}] {r.path.name} — {r.detail}")
 
     results = process_batch(cfg, on_progress=progress)
     print_summary(results, cfg.output)

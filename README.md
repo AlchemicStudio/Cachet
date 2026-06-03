@@ -1,141 +1,141 @@
 # signApp
 
-Signature **par lot** de fichiers PDF avec la **carte d'identité électronique
-belge (eID)**, ou apposition d'une **image** de signature — avec validation des
-entrées par rapport à un modèle, en **ligne de commande** comme en **interface
-graphique** (CustomTkinter).
+**Batch** signing of PDF files with the **Belgian electronic identity card
+(eID)**, or stamping of a signature **image** — with input validation against a
+template, both from the **command line** and from a **graphical interface**
+(CustomTkinter).
 
-> ⚖️ Le mode eID utilise le certificat de **non-répudiation** de la carte,
-> juridiquement équivalent à une signature manuscrite. Le **numéro de registre
-> national** est inscrit dans chaque signature produite — attention à la
-> diffusion des PDF signés.
+> ⚖️ The eID mode uses the card's **non-repudiation** certificate, legally
+> equivalent to a handwritten signature. The **national register number** is
+> embedded in every signature produced — mind the distribution of the signed
+> PDFs.
 
 ---
 
-## Deux modes de signature
+## Two signature modes
 
-| Mode | Carte requise | Nature | Rendu |
+| Mode | Card required | Nature | Output |
 |---|---|---|---|
-| **`beid`** | oui (lecteur + carte + PIN par document) | signature **cryptographique** eID (pyHanko via le middleware PKCS#11) | **vignette** visible : photo du titulaire + « Signed by: » / nom / date |
-| **`image`** | non | **tampon d'image** (ce n'est *pas* une signature cryptographique) | l'image fournie, posée à une position choisie |
+| **`beid`** | yes (reader + card + PIN per document) | **cryptographic** eID signature (pyHanko via the PKCS#11 middleware) | visible **vignette**: cardholder photo + "Signed by:" / name / date |
+| **`image`** | no | **image stamp** (this is *not* a cryptographic signature) | the supplied image, placed at a chosen position |
 
-Dans les deux modes, la même vignette/image + page + position est appliquée à
-**tous** les documents du lot — la validation par modèle garantit que les
-fichiers sont géométriquement identiques.
+In both modes, the same vignette/image + page + position is applied to **all**
+the documents in the batch — template validation guarantees the files are
+geometrically identical.
 
-## Validation par modèle (`--template`)
+## Template validation (`--template`)
 
-Si un PDF modèle est fourni, chaque entrée est acceptée **uniquement** si elle a
-le **même nombre de pages** ET des **dimensions par page exactement identiques**
-(égalité stricte, sans tolérance). Les fichiers rejetés ne sont jamais signés ;
-le motif du rejet est affiché (récapitulatif CLI / tableau GUI).
+If a template PDF is supplied, each input is accepted **only** if it has the
+**same page count** AND **exactly identical per-page dimensions** (strict
+equality, no tolerance). Rejected files are never signed; the rejection reason
+is displayed (CLI summary / GUI table).
 
-## Sortie
+## Output
 
-Les fichiers sont écrits `{nom}_signe.pdf` dans le dossier de sortie et **ne
-sont jamais écrasés** : en cas de collision, ` - 1`, ` - 2`, … sont ajoutés.
+Files are written as `{name}_signe.pdf` in the output folder and are **never
+overwritten**: on collision, ` - 1`, ` - 2`, … are appended.
 
 ---
 
-## Prérequis (runtime)
+## Requirements (runtime)
 
-- **Mode `beid`** : le **middleware eID belge** installé
-  (<https://eid.belgium.be>), qui fournit la bibliothèque PKCS#11
-  (`libbeidpkcs11.so` / `beidpkcs11.dll` / `…dylib`), un **lecteur + carte eID
-  insérée**, et le service **PC/SC** (`pcscd`) en marche. Le PIN est demandé
-  pour **chaque** document.
-- **Mode `image`** : rien de particulier — tampon PDF pur.
-- **Interface graphique** : `customtkinter` + un Python avec `tkinter` et un
-  affichage. L'aperçu de page (étape 6) est rendu par **pypdfium2** (moteur
-  PDFium **embarqué**) — aucune dépendance externe à installer. (poppler /
-  `pdftoppm` n'est plus qu'un repli optionnel s'il est déjà présent.)
+- **`beid` mode**: the **Belgian eID middleware** installed
+  (<https://eid.belgium.be>), which provides the PKCS#11 library
+  (`libbeidpkcs11.so` / `beidpkcs11.dll` / `…dylib`), a **reader + inserted eID
+  card**, and the **PC/SC** service (`pcscd`) running. The PIN is requested for
+  **each** document.
+- **`image` mode**: nothing special — pure PDF stamping.
+- **Graphical interface**: `customtkinter` + a Python with `tkinter` and a
+  display. The page preview (step 6) is rendered by **pypdfium2** (the
+  **bundled** PDFium engine) — no external dependency to install. (poppler /
+  `pdftoppm` is now only an optional fallback if already present.)
 
-## Installation (depuis les sources)
+## Installation (from source)
 
 ```bash
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
-# GUI sous Ubuntu/Debian, si tkinter manque :  sudo apt install python3-tk
+# GUI on Ubuntu/Debian, if tkinter is missing:  sudo apt install python3-tk
 ```
 
 ---
 
-## Utilisation — ligne de commande
+## Usage — command line
 
 ```bash
-# Signature eID (vignette en bas à droite de la dernière page) :
+# eID signing (vignette bottom-right of the last page):
 ./venv/bin/python sign_pdfs_beid.py --input ../pdfs --output ../signes --mode beid --pades
 
-# Tampon d'image (sans carte), validé contre un modèle :
+# Image stamp (no card), validated against a template:
 ./venv/bin/python sign_pdfs_beid.py --mode image \
   --template ../pdfs/MODELE.pdf --input ../pdfs --output ../signes \
   --image-path signature.png --page 1 --x 360 --y 150
 
-# Interface graphique :
+# Graphical interface:
 ./venv/bin/python sign_pdfs_beid.py --gui
 ```
 
 ### Options
 
-| Drapeau | Signification |
+| Flag | Meaning |
 |---|---|
-| `--gui` | lance l'interface graphique ; sinon exécution en mode console. |
-| `--input <chemins…>` | fichiers et/ou dossiers à traiter (les dossiers sont parcourus pour `*.pdf`). |
-| `--output <dossier>` | dossier de sortie (`{nom}_signe.pdf`, jamais écrasé). |
-| `--template <pdf>` | PDF modèle ; si fourni, les entrées sont validées contre lui. |
-| `--mode beid\|image` | mode de signature (défaut `beid`). |
-| `--image-path <img>` | image à apposer (**requis** en `--mode image`). |
-| `--page <N>` | page cible, **1-based**. Image : page d'insertion. beID : page de la vignette. |
-| `--x <pt> --y <pt>` | coin inférieur gauche, en points depuis le bas-gauche de la page. beID : **omettre les deux ⇒ bas-droite de la dernière page**. |
-| `--pades` | signature **PAdES** (archivage long terme). |
-| `--lib <chemin>` | chemin vers la bibliothèque PKCS#11 eID (sinon valeur par défaut selon l'OS). |
-| `--field <nom>` | nom de base du champ de signature (mode beid). |
+| `--gui` | launch the graphical interface; otherwise run in console mode. |
+| `--input <paths…>` | files and/or folders to process (folders are globbed for `*.pdf`). |
+| `--output <folder>` | output folder (`{name}_signe.pdf`, never overwritten). |
+| `--template <pdf>` | template PDF; if supplied, inputs are validated against it. |
+| `--mode beid\|image` | signature mode (default `beid`). |
+| `--image-path <img>` | image to stamp (**required** in `--mode image`). |
+| `--page <N>` | target page, **1-based**. Image: insertion page. beID: vignette page. |
+| `--x <pt> --y <pt>` | lower-left corner, in points from the page's bottom-left. beID: **omit both ⇒ bottom-right of the last page**. |
+| `--pades` | **PAdES** signature (long-term archiving). |
+| `--lib <path>` | path to the eID PKCS#11 library (otherwise OS-default value). |
+| `--field <name>` | base name of the signature field (beid mode). |
 
-> Compatibilité ascendante : l'ancienne forme positionnelle `entrées… dossier_sortie`
-> reste acceptée si `--input`/`--output` sont absents.
+> Backward compatibility: the legacy positional form `inputs… output_folder`
+> is still accepted if `--input`/`--output` are absent.
 
-## Utilisation — interface graphique
+## Usage — graphical interface
 
-Un assistant vertical déroule le flux : **1.** modèle → **2.** fichiers →
-**3.** dossier de sortie → **4.** validation (tableau pass/échec) → **5.** mode
-(eID/image + PAdES) → **6.** page + position (aperçu réel de la page, clic pour
-placer) → **7.** lancer → **8.** récapitulatif par document.
+A vertical wizard walks through the flow: **1.** template → **2.** files →
+**3.** output folder → **4.** validation (pass/fail table) → **5.** mode
+(eID/image + PAdES) → **6.** page + position (actual page preview, click to
+place) → **7.** launch → **8.** per-document summary.
 
 ---
 
-## Exécutables autonomes (Linux & Windows)
+## Standalone executables (Linux & Windows)
 
-Le projet se compile en **deux binaires autonomes** par OS (un GUI fenêtré
-`signApp`, un CLI console `signApp-cli`) — aucun Python requis sur la machine
-cible. Voir **[BUILD.md](BUILD.md)** pour toutes les routes (natif Linux,
-Windows natif, Wine, et CI GitHub Actions).
+The project compiles into **two standalone binaries** per OS (a windowed GUI
+`signApp`, a console CLI `signApp-cli`) — no Python required on the target
+machine. See **[BUILD.md](BUILD.md)** for all the routes (native Linux, native
+Windows, Wine, and GitHub Actions CI).
 
 ```bash
 ./build_linux.sh        # Linux  -> dist/signApp , dist/signApp-cli
 build_windows.bat       # Windows -> dist\signApp.exe , dist\signApp-cli.exe
 ```
 
-Le middleware eID reste une **dépendance runtime** (mode beid) et n'est jamais
-embarqué ; l'aperçu de page, lui, fonctionne sans rien installer (PDFium
-embarqué via pypdfium2).
+The eID middleware remains a **runtime dependency** (beid mode) and is never
+bundled; the page preview, for its part, works without installing anything
+(PDFium bundled via pypdfium2).
 
 ## Tests
 
-Suite `unittest` headless (sans carte ni tkinter) :
+Headless `unittest` suite (no card, no tkinter):
 
 ```bash
 ./venv/bin/python -m unittest -v
 ```
 
-## Structure du projet
+## Project structure
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `sign_pdfs_beid.py` | cœur + point d'entrée CLI (logique métier, importable sans tkinter). |
-| `gui.py` | interface CustomTkinter (façade au-dessus du cœur). |
-| `gui_main.py` | point d'entrée du binaire fenêtré (ouvre la GUI). |
-| `test_sign_pdfs_beid.py` | suite de tests `unittest`. |
-| `signApp.spec` | recette PyInstaller (deux binaires). |
-| `build_*.sh` / `build_windows.bat` | scripts de build. |
-| `.github/workflows/build.yml` | CI : binaires Windows + Linux en artefacts. |
-| `BUILD.md` | guide d'empaquetage détaillé. |
+| `sign_pdfs_beid.py` | core + CLI entry point (business logic, importable without tkinter). |
+| `gui.py` | CustomTkinter interface (façade over the core). |
+| `gui_main.py` | entry point of the windowed binary (opens the GUI). |
+| `test_sign_pdfs_beid.py` | `unittest` test suite. |
+| `signApp.spec` | PyInstaller recipe (two binaries). |
+| `build_*.sh` / `build_windows.bat` | build scripts. |
+| `.github/workflows/build.yml` | CI: Windows + Linux binaries as artifacts. |
+| `BUILD.md` | detailed packaging guide. |

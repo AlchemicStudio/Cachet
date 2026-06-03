@@ -1,23 +1,23 @@
-# Construire les exécutables autonomes (Linux & Windows)
+# Building the standalone executables (Linux & Windows)
 
-`signApp` est empaqueté avec **PyInstaller** en **deux binaires autonomes**, à
-partir d'un seul fichier de recette `signApp.spec` :
+`signApp` is packaged with **PyInstaller** into **two standalone binaries**,
+from a single recipe file `signApp.spec`:
 
-| Binaire | Type | Rôle | Double-clic |
+| Binary | Type | Role | Double-click |
 |---|---|---|---|
-| **`signApp`** (`.exe` sous Windows) | fenêtré (`console=False`) | ouvre l'**interface graphique** CustomTkinter | ➜ lance la GUI |
-| **`signApp-cli`** (`.exe` sous Windows) | console (`console=True`) | **signature/tampon en lot** depuis un terminal | ➜ affiche l'aide |
+| **`signApp`** (`.exe` on Windows) | windowed (`console=False`) | opens the CustomTkinter **graphical interface** | ➜ launches the GUI |
+| **`signApp-cli`** (`.exe` on Windows) | console (`console=True`) | **batch signing/stamping** from a terminal | ➜ shows the help |
 
-Le binaire console est volontairement **headless** (sans Tk) donc plus léger ; le
-binaire fenêtré embarque Tk + CustomTkinter + tout le moteur.
+The console binary is deliberately **headless** (no Tk) and thus lighter; the
+windowed binary bundles Tk + CustomTkinter + the whole engine.
 
-> ℹ️ **PyInstaller ne fait pas de cross-compilation.** Un `.exe` Windows doit être
-> produit *sur* Windows (machine réelle, CI Windows, ou Wine). Le binaire Linux se
-> compile nativement sous Linux. Les trois routes Windows sont décrites plus bas.
+> ℹ️ **PyInstaller does not cross-compile.** A Windows `.exe` must be produced
+> *on* Windows (real machine, Windows CI, or Wine). The Linux binary compiles
+> natively on Linux. The three Windows routes are described below.
 
 ---
 
-## 1. Linux (natif)
+## 1. Linux (native)
 
 ```bash
 ./build_linux.sh
@@ -25,20 +25,20 @@ binaire fenêtré embarque Tk + CustomTkinter + tout le moteur.
 # -> dist/signApp-cli    (CLI)
 ```
 
-Le binaire fenêtré exige `tkinter`/`_tkinter` dans le Python du venv. Sur
-Ubuntu/Debian si nécessaire : `sudo apt install python3-tk` (ou `python3.14-tk`).
+The windowed binary requires `tkinter`/`_tkinter` in the venv's Python. On
+Ubuntu/Debian if needed: `sudo apt install python3-tk` (or `python3.14-tk`).
 
-**Compatibilité glibc** : compilez sur la **plus ancienne** distribution à
-supporter. PyInstaller embarque Python et les libs Python mais lie dynamiquement
-la glibc système ; un binaire compilé sur une glibc récente échouera sur une
-cible plus ancienne (`GLIBC_2.xx not found`).
+**glibc compatibility**: compile on the **oldest** distribution you want to
+support. PyInstaller bundles Python and the Python libs but links dynamically
+against the system glibc; a binary compiled on a recent glibc will fail on an
+older target (`GLIBC_2.xx not found`).
 
 ---
 
-## 2. Windows — sur une vraie machine Windows (le plus fiable)
+## 2. Windows — on a real Windows machine (the most reliable)
 
-Prérequis : **Python 64 bits 3.12 / 3.13 / 3.14** installé avec l'option
-*« tcl/tk and IDLE »* cochée, `py`/`python` dans le `PATH`.
+Prerequisites: **64-bit Python 3.12 / 3.13 / 3.14** installed with the
+*"tcl/tk and IDLE"* option checked, `py`/`python` in the `PATH`.
 
 ```bat
 build_windows.bat
@@ -46,108 +46,107 @@ build_windows.bat
 :: -> dist\signApp-cli.exe    (CLI)
 ```
 
-C'est la route recommandée pour un livrable de production : elle produit un `.exe`
-natif testable immédiatement (y compris le mode eID si un lecteur + carte sont
-présents).
+This is the recommended route for a production deliverable: it produces a native
+`.exe` testable immediately (including eID mode if a reader + card are present).
 
 ---
 
-## 3. Windows — via GitHub Actions (CI, reproductible)
+## 3. Windows — via GitHub Actions (CI, reproducible)
 
-Le workflow `.github/workflows/build.yml` compile **Windows + Linux** sur les
-runners GitHub à chaque `push`/tag, lance un smoke-test (mode image, sans carte)
-et publie les binaires en artefacts.
+The `.github/workflows/build.yml` workflow compiles **Windows + Linux** on the
+GitHub runners on every `push`/tag, runs a smoke test (image mode, no card) and
+publishes the binaries as artifacts.
 
 ```bash
-# une seule fois : pousser le dépôt sur GitHub
-git remote add origin git@github.com:<vous>/<repo>.git
+# once: push the repository to GitHub
+git remote add origin git@github.com:<you>/<repo>.git
 git push -u origin main
 ```
 
-Puis : onglet **Actions** → run → **Artifacts** → `signApp-windows-latest` /
-`signApp-ubuntu-latest`. Déclenchable aussi manuellement (*workflow_dispatch*).
+Then: **Actions** tab → run → **Artifacts** → `signApp-windows-latest` /
+`signApp-ubuntu-latest`. Can also be triggered manually (*workflow_dispatch*).
 
-La version Python du CI est `3.13` (variable `PYTHON_VERSION` en tête du
-workflow ; `3.14` fonctionne aussi).
+The CI's Python version is `3.13` (variable `PYTHON_VERSION` at the top of the
+workflow; `3.14` works too).
 
 ---
 
-## 4. Windows — via Wine, depuis Linux (best effort)
+## 4. Windows — via Wine, from Linux (best effort)
 
-> ⚠️ Officiellement **non supporté** par PyInstaller. À réserver à un `.exe` de
-> dépannage : la **GUI ne s'affiche souvent pas** correctement *sous Wine*
-> (bugs Tcl/Tk + GDI propres à Wine, absents sur un vrai Windows), et le **mode
-> eID n'est pas testable** sous Wine (ni lecteur, ni carte, ni `beidpkcs11.dll`).
+> ⚠️ Officially **unsupported** by PyInstaller. Reserve this for a stopgap
+> `.exe`: the **GUI often does not display** correctly *under Wine* (Tcl/Tk +
+> GDI bugs specific to Wine, absent on real Windows), and **eID mode is not
+> testable** under Wine (no reader, no card, no `beidpkcs11.dll`).
 
 ```bash
-sudo apt install wine        # unique étape root, à lancer vous-même
-./build_windows_wine.sh      # télécharge Python Windows, installe les deps, build
+sudo apt install wine        # single root step, run it yourself
+./build_windows_wine.sh      # downloads Windows Python, installs the deps, builds
 # -> dist/signApp.exe, dist/signApp-cli.exe
 ```
 
-Le script crée un prefix Wine 64 bits (`~/.wine-signapp`), installe Python 3.12
-Windows (toutes les *wheels* `win_amd64` épinglées existent en cp312), `pip
-install --only-binary=:all:` (un wheel manquant échoue franchement plutôt que de
-tenter une compilation impossible sous Wine), puis lance PyInstaller.
+The script creates a 64-bit Wine prefix (`~/.wine-signapp`), installs Python 3.12
+for Windows (all pinned `win_amd64` *wheels* exist as cp312), `pip install
+--only-binary=:all:` (a missing wheel fails outright rather than attempting an
+impossible compilation under Wine), then runs PyInstaller.
 
-**Le résultat doit être validé sur un vrai Windows** avant diffusion.
-
----
-
-## Dépendances *runtime* (NON embarquées — à installer sur la machine cible)
-
-Ces composants sont chargés dynamiquement et **ne peuvent pas** être empaquetés :
-
-- **Middleware eID belge** — fournit la bibliothèque PKCS#11 chargée par chemin
-  (`pkcs11.lib(...)`), **mode `beid` uniquement** :
-  - Windows : `C:\Windows\System32\beidpkcs11.dll`
-  - Linux : `/usr/lib/…/libbeidpkcs11.so` (+ `pcscd` lancé)
-  - macOS : `/usr/local/lib/libbeidpkcs11.dylib`
-  - À installer depuis <https://eid.belgium.be>. Surchargez le chemin via `--lib`.
-  - Nécessite aussi un **lecteur + carte eID insérée** + le service PC/SC.
-L'**aperçu de page** de la GUI (étape 6) est rendu par **pypdfium2** (moteur
-PDFium **embarqué** dans l'exécutable) : rien à installer, sur aucun OS.
-`poppler` (`pdftoppm`) n'est plus qu'un **repli optionnel** utilisé seulement
-s'il est déjà présent sur la machine (cf. `core.render_page_image`).
-
-Le **mode image** ne dépend d'aucun de ces composants : il est pleinement
-fonctionnel et testable sans matériel.
+**The result must be validated on real Windows** before distribution.
 
 ---
 
-## Personnalisation
+## *Runtime* dependencies (NOT bundled — to be installed on the target machine)
 
-- **Icône** : déposez `signApp.ico` (Windows) ou `signApp.icns` (macOS) à côté de
-  `signApp.spec` — il sera repris automatiquement. Sous Linux l'icône est ignorée
-  par PyInstaller (fournissez plutôt un fichier `.desktop` avec `Icon=`).
-- **onefile → onedir** : par défaut chaque binaire est *onefile* (un seul
-  fichier, démarrage un peu plus lent car décompressé dans un dossier temporaire).
-  Pour un démarrage plus rapide (dossier `exe + _internal/`), passez
-  `exclude_binaries=True` dans chaque `EXE(...)` et ajoutez un `COLLECT(...)` —
-  voir la doc PyInstaller.
+These components are loaded dynamically and **cannot** be packaged:
+
+- **Belgian eID middleware** — provides the PKCS#11 library loaded by path
+  (`pkcs11.lib(...)`), **`beid` mode only**:
+  - Windows: `C:\Windows\System32\beidpkcs11.dll`
+  - Linux: `/usr/lib/…/libbeidpkcs11.so` (+ `pcscd` running)
+  - macOS: `/usr/local/lib/libbeidpkcs11.dylib`
+  - Install it from <https://eid.belgium.be>. Override the path via `--lib`.
+  - Also requires a **reader + inserted eID card** + the PC/SC service.
+The GUI's **page preview** (step 6) is rendered by **pypdfium2** (PDFium engine
+**bundled** in the executable): nothing to install, on any OS.
+`poppler` (`pdftoppm`) is now only an **optional fallback** used only if it is
+already present on the machine (see `core.render_page_image`).
+
+The **image mode** depends on none of these components: it is fully functional
+and testable without hardware.
 
 ---
 
-## Dépannage
+## Customization
 
-| Symptôme | Cause | Correctif |
+- **Icon**: drop `signApp.ico` (Windows) or `signApp.icns` (macOS) next to
+  `signApp.spec` — it will be picked up automatically. On Linux the icon is
+  ignored by PyInstaller (provide a `.desktop` file with `Icon=` instead).
+- **onefile → onedir**: by default each binary is *onefile* (a single file,
+  slightly slower startup because it is decompressed into a temporary folder).
+  For faster startup (an `exe + _internal/` folder), pass
+  `exclude_binaries=True` in each `EXE(...)` and add a `COLLECT(...)` — see the
+  PyInstaller docs.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
 |---|---|---|
-| GUI : `Can't find a usable init.tcl` / fenêtre vide | données Tcl/Tk non collectées | rebuild avec un Python ayant un `tkinter` complet ; le hook `_tkinter` les collecte dans `_tcl_data`/`_tk_data` |
-| GUI : `FileNotFoundError` sur un thème `.json` | assets customtkinter manquants | s'assurer que `pyinstaller-hooks-contrib` est installé (il l'est) ; le spec fait aussi `collect_all('customtkinter')` |
-| `ModuleNotFoundError: pkcs11._pkcs11` | extension native non embarquée | déjà géré (`collect_dynamic_libs('pkcs11')` + hiddenimport) ; vérifier le log de build |
-| `ZoneInfoNotFoundError` à la signature **sur Windows** | base zoneinfo absente | `tzdata` (installé via `requirements-build.txt` sur Windows ; collecté par le spec) |
-| Erreur OpenSSL d'`oscrypto` | parsing de version sur certains OpenSSL | non déclenché par les modes image/eID de cette app (le trust-list Linux lit des PEM) ; sinon `pip install` un oscrypto corrigé ou pyhanko-certvalidator ≥ 0.41 |
-| `mode beid` « échoue » sur machine vierge | middleware eID/lecteur/carte absents | **attendu** : installer le middleware eID (voir ci-dessus) ; ce n'est pas un bug d'empaquetage |
-| Antivirus / SmartScreen bloque le `.exe` | binaires onefile non signés souvent signalés | `upx=False` (déjà le cas) ; idéalement **signer (Authenticode)** le `.exe` sur Windows ; au besoin passer en *onedir* |
-| `GLIBC_2.xx not found` (Linux) | compilé sur une glibc trop récente | recompiler sur la plus ancienne distribution cible |
+| GUI: `Can't find a usable init.tcl` / empty window | Tcl/Tk data not collected | rebuild with a Python that has a complete `tkinter`; the `_tkinter` hook collects it into `_tcl_data`/`_tk_data` |
+| GUI: `FileNotFoundError` on a `.json` theme | missing customtkinter assets | make sure `pyinstaller-hooks-contrib` is installed (it is); the spec also does `collect_all('customtkinter')` |
+| `ModuleNotFoundError: pkcs11._pkcs11` | native extension not bundled | already handled (`collect_dynamic_libs('pkcs11')` + hiddenimport); check the build log |
+| `ZoneInfoNotFoundError` at signing time **on Windows** | zoneinfo database missing | `tzdata` (installed via `requirements-build.txt` on Windows; collected by the spec) |
+| OpenSSL error from `oscrypto` | version parsing on certain OpenSSL builds | not triggered by this app's image/eID modes (the Linux trust-list reads PEM files); otherwise `pip install` a fixed oscrypto or pyhanko-certvalidator ≥ 0.41 |
+| `beid mode` "fails" on a clean machine | eID middleware/reader/card missing | **expected**: install the eID middleware (see above); this is not a packaging bug |
+| Antivirus / SmartScreen blocks the `.exe` | unsigned onefile binaries are often flagged | `upx=False` (already the case); ideally **sign (Authenticode)** the `.exe` on Windows; switch to *onedir* if needed |
+| `GLIBC_2.xx not found` (Linux) | compiled on too recent a glibc | recompile on the oldest target distribution |
 
 ---
 
-## Ce qui ne peut PAS être testé sans matériel
+## What CANNOT be tested without hardware
 
-Le **mode eID** (signature cryptographique via la carte) exige un lecteur + une
-carte eID + le middleware + une saisie de PIN par document : il ne peut être
-validé que sur une vraie machine équipée. L'empaquetage est vérifié jusqu'au
-chargement de la bibliothèque PKCS#11 ; la signature réelle doit faire l'objet
-d'un **test d'acceptation sur Windows réel** (signer un PDF, vérifier la
-signature dans Adobe Reader / pyHanko) avant diffusion.
+The **eID mode** (cryptographic signature via the card) requires a reader + an
+eID card + the middleware + a PIN entry per document: it can only be validated
+on a real, equipped machine. Packaging is verified up to the loading of the
+PKCS#11 library; the actual signature must be the subject of an **acceptance
+test on real Windows** (sign a PDF, verify the signature in Adobe Reader /
+pyHanko) before distribution.

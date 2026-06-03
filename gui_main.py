@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Point d'entrée de l'exécutable GUI (binaire fenêtré).
+"""Entry point of the GUI executable (windowed binary).
 
-Lance directement l'interface graphique CustomTkinter, SANS avoir à passer
-``--gui`` : c'est le point d'entrée du binaire fenêtré « signApp » produit par
-PyInstaller (voir ``signApp.spec``). Le binaire console « signApp-cli » utilise
-au contraire ``sign_pdfs_beid.py`` (la CLI). Double-cliquer sur « signApp »
-ouvre donc directement la fenêtre.
+Launches the CustomTkinter graphical interface directly, WITHOUT having to pass
+``--gui``: this is the entry point of the windowed "signApp" binary produced by
+PyInstaller (see ``signApp.spec``). The console binary "signApp-cli" instead
+uses ``sign_pdfs_beid.py`` (the CLI). Double-clicking "signApp" therefore opens
+the window directly.
 
-Les mêmes drapeaux que la CLI sont acceptés (``--lib`` notamment) et transmis à
-la GUI ; sans argument, la fenêtre s'ouvre avec les valeurs par défaut.
+The same flags as the CLI are accepted (notably ``--lib``) and passed on to the
+GUI; with no argument, the window opens with the default values.
 """
 
 from __future__ import annotations
@@ -22,13 +22,13 @@ def main() -> int:
     args = build_arg_parser().parse_args()
     try:
         from gui import launch_gui
-    except Exception as exc:  # noqa: BLE001 - on veut un message lisible
-        # Sur le binaire fenêtré (console=False), stderr n'est pas visible :
-        # on tente une boîte de dialogue native avant de retomber sur stderr.
+    except Exception as exc:  # noqa: BLE001 - we want a readable message
+        # On the windowed binary (console=False), stderr is not visible:
+        # we try a native dialog box before falling back to stderr.
         msg = (
-            f"Impossible de charger l'interface graphique : {exc}\n"
-            "Cet exécutable embarque pourtant Tk/CustomTkinter ; "
-            "signale ce message au support."
+            f"Could not load the graphical interface: {exc}\n"
+            "This executable bundles Tk/CustomTkinter; "
+            "please report this message to support."
         )
         try:
             import tkinter.messagebox as mb

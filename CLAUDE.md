@@ -16,7 +16,7 @@ wraps the same logic as the headless CLI.
   is not a cryptographic signature; it is the alternative to `beid`.
 
 No build system, no linter config, no git repo. Tests use stdlib `unittest`.
-Code comments and CLI/GUI text are in French.
+Code comments and CLI/GUI text are in English.
 
 ## Modules
 
@@ -110,7 +110,7 @@ The image is scaled to a fixed width `_IMG_TARGET_W_PT` (150 pt) preserving
 aspect, with **no border** — `insert_image_one` sets `border_width=0` on the
 `StaticStampStyle` (whose default is 3 pt black, which would frame the image).
 The GUI and CLI share this convention exactly. An out-of-range `--page` is
-reported as a clear per-document failure ("page N hors limites…"), not a raw
+reported as a clear per-document failure ("page N out of range…"), not a raw
 pyHanko error.
 
 **beID vignette placement.** In `beid` mode, supplying `--x/--y` (or clicking in
@@ -151,7 +151,7 @@ thread drains it via a periodic `self.after(100, self._poll_results)`. Calling
 do not reintroduce that. The worker catches `(Exception, SystemExit)`:
 `open_eid_session()` raises **`SystemExit`** (no reader/card), which is *not* an
 `Exception`, so a bare `except Exception` would let the worker die silently and
-hang the GUI on "Traitement en cours…". `_poll_results` also no-ops if the
+hang the GUI on "Processing…". `_poll_results` also no-ops if the
 window was closed mid-batch. A guarded end-to-end test (`GuiImageEndToEnd`,
 skipped without a display) covers these paths.
 

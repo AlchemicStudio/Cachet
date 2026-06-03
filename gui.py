@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
-"""Interface graphique CustomTkinter pour signApp.
+"""CustomTkinter graphical interface for signApp.
 
-Ce module n'est importé QUE lorsqu'on lance `sign_pdfs_beid.py --gui` : il
-dépend de tkinter/customtkinter, absents en mode CLI/headless. Toute la logique
-métier (validation, insertion d'image, signature eID, calcul de placement) vit
-dans `sign_pdfs_beid.py` et est testée sans tkinter ; la GUI n'en est qu'une
-façade qui suit le workflow demandé :
+This module is imported ONLY when running `sign_pdfs_beid.py --gui`: it
+depends on tkinter/customtkinter, which are absent in CLI/headless mode. All the
+business logic (validation, image insertion, eID signing, placement math) lives
+in `sign_pdfs_beid.py` and is tested without tkinter; the GUI is merely a
+façade that follows the requested workflow:
 
-    1. Choisir le PDF modèle.        5. Choisir le mode (eID | image).
-    2. Choisir les fichiers.         6. Page + position (les deux modes ;
-    3. Choisir le dossier de sortie.    image : aussi le choix de l'image).
-    4. Valider les fichiers.         7. Lancer.  8. Récapitulatif par document.
+    1. Choose the template PDF.      5. Choose the mode (eID | image).
+    2. Choose the files.             6. Page + position (both modes;
+    3. Choose the output folder.        image: also the image choice).
+    4. Validate the files.           7. Run.  8. Per-document summary.
 
-Le cadre de sélection (étape 6) affiche le rendu réel de la page courante du
-modèle et se redimensionne avec la fenêtre ; un clic y place la signature
-(placeholder à l'échelle : image en mode image, cadre 3:1 large d'1/5 de page
-en mode beid).
+The selection frame (step 6) shows the actual rendering of the template's
+current page and resizes with the window; a click there places the signature
+(scaled placeholder: image in image mode, 3:1 box of width page/5 in beid
+mode).
 """
 
 from __future__ import annotations
@@ -30,22 +30,22 @@ from PIL import Image, ImageTk
 
 import sign_pdfs_beid as core
 
-_FRAME_MAX_W = 360   # taille max du cadre d'aperçu de page (px)
+_FRAME_MAX_W = 360   # max size of the page preview frame (px)
 _FRAME_MAX_H = 460
 
 
 class SignApp(ctk.CTk):
-    """Fenêtre principale : tout le workflow dans une vue défilante."""
+    """Main window: the whole workflow in a scrollable view."""
 
     def __init__(self, args):
         super().__init__()
-        self.title("signApp — signature de PDF")
+        self.title("signApp — PDF signing")
         self.geometry("900x900")
         _style = ttk.Style()
-        _style.configure("Treeview", rowheight=30, font=("", 11))   # lignes hautes, texte complet
+        _style.configure("Treeview", rowheight=30, font=("", 11))   # tall rows, full text
         _style.configure("Treeview.Heading", font=("", 11, "bold"))
 
-        # --- état ---
+        # --- state ---
         self.default_lib = getattr(args, "lib", None)
         self.template_path: Path | None = None
         self.template_dims: list[tuple[float, float]] = []
@@ -55,20 +55,20 @@ class SignApp(ctk.CTk):
         self.mode_var = ctk.StringVar(value="beid")
         self.pades_var = ctk.BooleanVar(value=False)
         self.image_path: Path | None = None
-        self.cur_page = 0                         # 0-based, pour l'aperçu
-        self.place_page: int | None = None        # 1-based, position retenue
+        self.cur_page = 0                         # 0-based, for the preview
+        self.place_page: int | None = None        # 1-based, chosen position
         self.place_x: float | None = None
         self.place_y: float | None = None
-        self._canvas_img = None                   # réf PhotoImage du placeholder
-        self._bg_img = None                       # réf PhotoImage du fond de page
-        self._page_img_cache: dict = {}           # (modèle, page) -> PIL pleine résolution
+        self._canvas_img = None                   # PhotoImage ref of the placeholder
+        self._bg_img = None                       # PhotoImage ref of the page background
+        self._page_img_cache: dict = {}           # (template, page) -> full-resolution PIL
         self._last_win_size = None
 
         root = ctk.CTkScrollableFrame(self)
         root.pack(fill="both", expand=True, padx=12, pady=12)
         self._build_steps(root)
         self._refresh_placement_section()
-        self.bind("<Configure>", self._on_resize)  # le canvas grandit avec la fenêtre
+        self.bind("<Configure>", self._on_resize)  # the canvas grows with the window
 
     # ------------------------------------------------------------------ UI
     def _build_steps(self, root) -> None:
@@ -77,78 +77,78 @@ class SignApp(ctk.CTk):
             lbl.pack(anchor="w", pady=(12, 2))
             return lbl
 
-        # 1. modèle
-        header("1. PDF modèle")
+        # 1. template
+        header("1. Template PDF")
         row = ctk.CTkFrame(root, fg_color="transparent"); row.pack(fill="x")
-        ctk.CTkButton(row, text="Choisir le modèle…", command=self._pick_template).pack(side="left")
-        self.template_lbl = ctk.CTkLabel(row, text="(aucun)"); self.template_lbl.pack(side="left", padx=10)
+        ctk.CTkButton(row, text="Choose template…", command=self._pick_template).pack(side="left")
+        self.template_lbl = ctk.CTkLabel(row, text="(none)"); self.template_lbl.pack(side="left", padx=10)
 
-        # 2. fichiers
-        header("2. Fichiers à signer")
+        # 2. files
+        header("2. Files to sign")
         row = ctk.CTkFrame(root, fg_color="transparent"); row.pack(fill="x")
-        ctk.CTkButton(row, text="Choisir les fichiers…", command=self._pick_inputs).pack(side="left")
-        self.inputs_lbl = ctk.CTkLabel(row, text="(aucun)"); self.inputs_lbl.pack(side="left", padx=10)
+        ctk.CTkButton(row, text="Choose files…", command=self._pick_inputs).pack(side="left")
+        self.inputs_lbl = ctk.CTkLabel(row, text="(none)"); self.inputs_lbl.pack(side="left", padx=10)
 
-        # 3. sortie
-        header("3. Dossier de sortie")
+        # 3. output
+        header("3. Output folder")
         row = ctk.CTkFrame(root, fg_color="transparent"); row.pack(fill="x")
-        ctk.CTkButton(row, text="Choisir le dossier…", command=self._pick_output).pack(side="left")
-        self.output_lbl = ctk.CTkLabel(row, text="(aucun)"); self.output_lbl.pack(side="left", padx=10)
+        ctk.CTkButton(row, text="Choose folder…", command=self._pick_output).pack(side="left")
+        self.output_lbl = ctk.CTkLabel(row, text="(none)"); self.output_lbl.pack(side="left", padx=10)
 
         # 4. validation
-        header("4. Validation (nombre de pages + dimensions exactes)")
-        ctk.CTkButton(root, text="Valider les fichiers", command=self._validate).pack(anchor="w")
-        self.valid_table = self._make_table(root, ("Fichier", "Résultat", "Détail"), height=5)
+        header("4. Validation (page count + exact dimensions)")
+        ctk.CTkButton(root, text="Validate files", command=self._validate).pack(anchor="w")
+        self.valid_table = self._make_table(root, ("File", "Result", "Detail"), height=5)
 
         # 5. mode
-        header("5. Mode de signature")
+        header("5. Signing mode")
         row = ctk.CTkFrame(root, fg_color="transparent"); row.pack(fill="x")
-        ctk.CTkRadioButton(row, text="eID (carte + vignette)", variable=self.mode_var,
+        ctk.CTkRadioButton(row, text="eID (card + vignette)", variable=self.mode_var,
                            value="beid", command=self._refresh_placement_section).pack(side="left", padx=(0, 16))
-        ctk.CTkRadioButton(row, text="Insertion d'image", variable=self.mode_var,
+        ctk.CTkRadioButton(row, text="Image insertion", variable=self.mode_var,
                            value="image", command=self._refresh_placement_section).pack(side="left")
         ctk.CTkCheckBox(row, text="PAdES", variable=self.pades_var).pack(side="left", padx=16)
 
-        # 6. page + position (LES DEUX modes ; le choix d'image n'apparaît qu'en image)
+        # 6. page + position (BOTH modes; the image choice appears only in image mode)
         self.image_section = ctk.CTkFrame(root)
         ctk.CTkLabel(self.image_section, text="6. Page + position",
                      font=ctk.CTkFont(size=15, weight="bold")).pack(anchor="w", pady=(4, 2))
         self.image_row = ctk.CTkFrame(self.image_section, fg_color="transparent")
         self.image_row.pack(fill="x")
-        ctk.CTkButton(self.image_row, text="Choisir l'image…", command=self._pick_image).pack(side="left")
-        self.image_lbl = ctk.CTkLabel(self.image_row, text="(aucune)"); self.image_lbl.pack(side="left", padx=10)
+        ctk.CTkButton(self.image_row, text="Choose image…", command=self._pick_image).pack(side="left")
+        self.image_lbl = ctk.CTkLabel(self.image_row, text="(none)"); self.image_lbl.pack(side="left", padx=10)
 
         self._nav_row = ctk.CTkFrame(self.image_section, fg_color="transparent")
         self._nav_row.pack(fill="x", pady=4)
-        ctk.CTkButton(self._nav_row, text="◀ Précédent", width=110,
+        ctk.CTkButton(self._nav_row, text="◀ Previous", width=110,
                       command=lambda: self._turn_page(-1)).pack(side="left")
         self.page_lbl = ctk.CTkLabel(self._nav_row, text="page —/—"); self.page_lbl.pack(side="left", padx=10)
-        ctk.CTkButton(self._nav_row, text="Suivant ▶", width=110,
+        ctk.CTkButton(self._nav_row, text="Next ▶", width=110,
                       command=lambda: self._turn_page(1)).pack(side="left")
-        self.pos_lbl = ctk.CTkLabel(self._nav_row, text="position : (cliquez dans le cadre)")
+        self.pos_lbl = ctk.CTkLabel(self._nav_row, text="position: (click in the frame)")
         self.pos_lbl.pack(side="left", padx=16)
 
-        # tkinter Canvas : fond = page rendue, clic = position. Grandit avec la fenêtre.
+        # tkinter Canvas: background = rendered page, click = position. Grows with the window.
         import tkinter as tk
         self.canvas = tk.Canvas(self.image_section, width=_FRAME_MAX_W, height=_FRAME_MAX_H,
                                 bg="#d9d9d9", highlightthickness=1, highlightbackground="#888")
         self.canvas.pack(pady=6, fill="both", expand=True)
         self.canvas.bind("<Button-1>", self._on_canvas_click)
 
-        # 7. lancer  (ancre : la section image se range JUSTE avant ce titre)
-        self._after_image_anchor = header("7. Lancer")
-        self.launch_btn = ctk.CTkButton(root, text="Lancer le traitement",
+        # 7. run  (anchor: the image section is placed JUST before this header)
+        self._after_image_anchor = header("7. Run")
+        self.launch_btn = ctk.CTkButton(root, text="Run",
                                         command=self._launch, fg_color="#2a7", hover_color="#196")
         self.launch_btn.pack(anchor="w")
         self.status_lbl = ctk.CTkLabel(root, text=""); self.status_lbl.pack(anchor="w", pady=2)
 
-        # 8. récapitulatif
-        header("8. Récapitulatif")
-        self.summary_table = self._make_table(root, ("Document", "Signé", "Détail"), height=8)
+        # 8. summary
+        header("8. Summary")
+        self.summary_table = self._make_table(root, ("Document", "Signed", "Detail"), height=8)
 
     def _make_table(self, parent, columns, height):
         table = ttk.Treeview(parent, columns=columns, show="headings", height=height)
-        widths = {"Fichier": 220, "Document": 220, "Détail": 380}
+        widths = {"File": 220, "Document": 220, "Detail": 380}
         for c in columns:
             table.heading(c, text=c)
             table.column(c, width=widths.get(c, 90), anchor="w")
@@ -161,27 +161,27 @@ class SignApp(ctk.CTk):
             table.delete(item)
 
     def _refresh_placement_section(self) -> None:
-        # Section visible dans LES DEUX modes (placement de la vignette OU de
-        # l'image). Rangée AVANT « 7. Lancer » pour respecter l'ordre du workflow.
+        # Section visible in BOTH modes (placement of the vignette OR the
+        # image). Placed BEFORE "7. Run" to respect the workflow order.
         self.image_section.pack(fill="both", expand=True, pady=6, before=self._after_image_anchor)
         if self.mode_var.get() == "image":
-            self.image_row.pack(fill="x", before=self._nav_row)   # choix d'image
+            self.image_row.pack(fill="x", before=self._nav_row)   # image choice
         else:
-            self.image_row.pack_forget()                          # beid : pas d'image
+            self.image_row.pack_forget()                          # beid: no image
         self._draw_page()
 
     # -------------------------------------------------------------- actions
     def _pick_template(self) -> None:
-        path = filedialog.askopenfilename(title="PDF modèle", filetypes=[("PDF", "*.pdf")])
+        path = filedialog.askopenfilename(title="Template PDF", filetypes=[("PDF", "*.pdf")])
         if not path:
             return
         self.template_path = Path(path)
-        self._page_img_cache.clear()              # nouveau modèle -> nouveaux rendus
+        self._page_img_cache.clear()              # new template -> new renders
         try:
             self.template_dims = core.page_dimensions(self.template_path)
         except Exception as exc:  # noqa: BLE001
             self.template_dims = []
-            self.template_lbl.configure(text=f"illisible : {exc}")
+            self.template_lbl.configure(text=f"unreadable: {exc}")
             return
         self.cur_page = 0
         self.template_lbl.configure(
@@ -190,14 +190,14 @@ class SignApp(ctk.CTk):
         self._draw_page()
 
     def _pick_inputs(self) -> None:
-        paths = filedialog.askopenfilenames(title="Fichiers à signer", filetypes=[("PDF", "*.pdf")])
+        paths = filedialog.askopenfilenames(title="Files to sign", filetypes=[("PDF", "*.pdf")])
         if not paths:
             return
         self.input_paths = [Path(p) for p in paths]
-        self.inputs_lbl.configure(text=f"{len(self.input_paths)} fichier(s)")
+        self.inputs_lbl.configure(text=f"{len(self.input_paths)} file(s)")
 
     def _pick_output(self) -> None:
-        path = filedialog.askdirectory(title="Dossier de sortie")
+        path = filedialog.askdirectory(title="Output folder")
         if not path:
             return
         self.output_dir = Path(path)
@@ -205,7 +205,7 @@ class SignApp(ctk.CTk):
 
     def _pick_image(self) -> None:
         path = filedialog.askopenfilename(
-            title="Image de signature", filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp")]
+            title="Signature image", filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp")]
         )
         if not path:
             return
@@ -217,15 +217,15 @@ class SignApp(ctk.CTk):
         self._clear(self.valid_table)
         self.valid_paths = []
         if not self.template_path or not self.input_paths:
-            self.status_lbl.configure(text="Choisis d'abord un modèle et des fichiers.")
+            self.status_lbl.configure(text="Choose a template and files first.")
             return
         for r in core.validate_files(self.template_path, self.input_paths):
             self.valid_table.insert("", "end",
-                                    values=(r.path.name, "✓ OK" if r.ok else "✗ rejeté", r.reason or "—"))
+                                    values=(r.path.name, "✓ OK" if r.ok else "✗ rejected", r.reason or "—"))
             if r.ok:
                 self.valid_paths.append(r.path)
         self.status_lbl.configure(
-            text=f"{len(self.valid_paths)}/{len(self.input_paths)} fichier(s) valides."
+            text=f"{len(self.valid_paths)}/{len(self.input_paths)} valid file(s)."
         )
 
     def _turn_page(self, delta: int) -> None:
@@ -235,13 +235,13 @@ class SignApp(ctk.CTk):
         self._draw_page()
 
     def _canvas_target_size(self) -> tuple[int, int]:
-        """Taille cible du canvas, dérivée de la fenêtre (grandit/rétrécit avec elle)."""
+        """Target canvas size, derived from the window (grows/shrinks with it)."""
         w = max(320, self.winfo_width() - 130)
         h = max(260, int(self.winfo_height() * 0.55))
         return w, h
 
     def _get_page_image(self, page_index):
-        """Image (PIL) pleine résolution de la page du modèle, mise en cache."""
+        """Full-resolution (PIL) image of the template page, cached."""
         if not self.template_path:
             return None
         key = (str(self.template_path), page_index)
@@ -260,14 +260,14 @@ class SignApp(ctk.CTk):
         pw, ph = self.template_dims[self.cur_page]
         fw, fh = core.fit_frame(pw, ph, cw, ch)
         ox, oy = (cw - fw) / 2, (ch - fh) / 2
-        pil = self._get_page_image(self.cur_page)   # fond = rendu réel de la page
+        pil = self._get_page_image(self.cur_page)   # background = actual page rendering
         if pil is not None:
             self._bg_img = ImageTk.PhotoImage(
                 pil.resize((max(1, int(fw)), max(1, int(fh))))
             )
             self.canvas.create_image(ox, oy, anchor="nw", image=self._bg_img)
             self.canvas.create_rectangle(ox, oy, ox + fw, oy + fh, outline="#333")
-        else:                                       # rendu indisponible -> cadre blanc
+        else:                                       # render unavailable -> blank frame
             self.canvas.create_rectangle(ox, oy, ox + fw, oy + fh, fill="white", outline="#333")
         self.page_lbl.configure(text=f"page {self.cur_page + 1}/{len(self.template_dims)}")
         self._frame_geom = (fw, fh, ox, oy)
@@ -286,12 +286,12 @@ class SignApp(ctk.CTk):
         pw, ph = self.template_dims[self.cur_page]
         x, y = core.frame_click_to_pdf_xy(pw, ph, fw, fh, cx, cy)
         self.place_page, self.place_x, self.place_y = self.cur_page + 1, x, y
-        self.pos_lbl.configure(text=f"position : page {self.place_page} @ ({x:.0f}, {y:.0f}) pt")
+        self.pos_lbl.configure(text=f"position: page {self.place_page} @ ({x:.0f}, {y:.0f}) pt")
         self._draw_page()
 
     def _placeholder_size_pt(self) -> tuple[float, float]:
-        """Taille (pt) du placeholder : image réelle en mode image, sinon cadre
-        vignette 3:1 large d'1/5 de la page courante (mode beid)."""
+        """Placeholder size (pt): actual image in image mode, otherwise a 3:1
+        vignette box of width page/5 of the current page (beid mode)."""
         pw = self.template_dims[self.cur_page][0]
         if self.mode_var.get() == "image" and self.image_path:
             return core.image_size_pt(self.image_path)
@@ -314,7 +314,7 @@ class SignApp(ctk.CTk):
         self.canvas.create_rectangle(left, top, left + w, top + h, outline="#c00", width=2)
 
     def _on_resize(self, event) -> None:
-        # le canvas suit la taille de la fenêtre, en gardant les proportions de page
+        # the canvas follows the window size, keeping the page proportions
         if event.widget is not self:
             return
         size = (event.width, event.height)
@@ -328,16 +328,16 @@ class SignApp(ctk.CTk):
     def _launch(self) -> None:
         files = self.valid_paths or self.input_paths
         if not files or not self.output_dir:
-            self.status_lbl.configure(text="Fichiers (validés) et dossier de sortie requis.")
+            self.status_lbl.configure(text="Validated files and an output folder are required.")
             return
         if self.mode_var.get() == "image" and (self.image_path is None or self.place_x is None):
             self.status_lbl.configure(
-                text="Mode image : choisis une image puis clique dans le cadre pour la position."
+                text="Image mode: choose an image, then click in the frame to set the position."
             )
             return
-        # beid : un clic place la vignette ; sans clic, vignette par défaut
-        # (bas à droite, dernière page). On transmet donc place_* tels quels (None
-        # si pas de clic) — process_batch en déduit le placement.
+        # beid: a click places the vignette; without a click, default vignette
+        # (bottom-right, last page). So we pass place_* as-is (None if no
+        # click) — process_batch derives the placement from it.
         cfg = core.RunConfig(
             inputs=files,
             output=self.output_dir,
@@ -356,30 +356,30 @@ class SignApp(ctk.CTk):
             self.status_lbl.configure(text=str(exc))
             return
         self._clear(self.summary_table)
-        self.status_lbl.configure(text="Traitement en cours…")
-        self.launch_btn.configure(state="disabled")   # évite les lots concurrents
-        # Tkinter n'est pas thread-safe : le worker n'écrit QUE dans une queue,
-        # et le thread principal la draine via un after() périodique.
+        self.status_lbl.configure(text="Processing…")
+        self.launch_btn.configure(state="disabled")   # avoids concurrent batches
+        # Tkinter is not thread-safe: the worker writes ONLY to a queue,
+        # and the main thread drains it via a periodic after().
         self._result_q = queue.Queue()
         threading.Thread(target=self._run_batch, args=(cfg,), daemon=True).start()
         self.after(100, self._poll_results)
 
     def _run_batch(self, cfg) -> None:
-        # exécuté hors thread principal : AUCUN appel Tk ici, seulement la queue.
+        # run off the main thread: NO Tk calls here, only the queue.
         try:
             results = core.process_batch(
                 cfg, on_progress=lambda r: self._result_q.put(("row", r))
             )
             self._result_q.put(("done", results))
         except (Exception, SystemExit) as exc:  # noqa: BLE001
-            # open_eid_session() lève SystemExit (« pas de lecteur/carte ») —
-            # SystemExit n'est PAS une Exception : sans ce cas, le thread mourrait
-            # en silence et la GUI resterait figée sur « Traitement en cours… ».
+            # open_eid_session() raises SystemExit ("no reader/card") —
+            # SystemExit is NOT an Exception: without this case, the thread would
+            # die silently and the GUI would stay stuck on "Processing…".
             self._result_q.put(("error", str(exc) or exc.__class__.__name__))
 
     def _poll_results(self) -> None:
-        # thread principal : draine la queue et met à jour les widgets.
-        if not self.winfo_exists():       # fenêtre fermée pendant le traitement
+        # main thread: drain the queue and update the widgets.
+        if not self.winfo_exists():       # window closed during processing
             return
         try:
             while True:
@@ -392,12 +392,12 @@ class SignApp(ctk.CTk):
                 elif kind == "done":
                     ok = sum(1 for r in payload if r.ok)
                     self.status_lbl.configure(
-                        text=f"Terminé : {ok}/{len(payload)} document(s) traité(s)."
+                        text=f"Done: {ok}/{len(payload)} document(s) processed."
                     )
                     self.launch_btn.configure(state="normal")
                     return
                 elif kind == "error":
-                    self.status_lbl.configure(text=f"Erreur : {payload}")
+                    self.status_lbl.configure(text=f"Error: {payload}")
                     self.launch_btn.configure(state="normal")
                     return
         except queue.Empty:
@@ -406,7 +406,7 @@ class SignApp(ctk.CTk):
 
 
 def launch_gui(args) -> int:
-    """Point d'entrée appelé par `sign_pdfs_beid.py --gui`."""
+    """Entry point called by `sign_pdfs_beid.py --gui`."""
     ctk.set_appearance_mode("system")
     app = SignApp(args)
     app.mainloop()

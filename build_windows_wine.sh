@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # ===================================================================
-#  Cross-build WINDOWS (.exe) DEPUIS LINUX via Wine — « best effort ».
+#  Cross-build WINDOWS (.exe) FROM LINUX via Wine — "best effort".
 #
-#  ⚠️  PyInstaller ne supporte PAS officiellement la cross-compilation.
-#      On exécute le PyInstaller *Windows* dans un Python *Windows*
-#      installé sous Wine ; la sortie est un vrai .exe PE.
+#  ⚠️  PyInstaller does NOT officially support cross-compilation.
+#      We run the *Windows* PyInstaller in a *Windows* Python
+#      installed under Wine; the output is a real PE .exe.
 #
-#  Limites connues (cf. BUILD.md) :
-#    - La GUI (signApp.exe) ne s'affiche souvent PAS correctement SOUS Wine
-#      (bugs Tcl/Tk + GDI propres à Wine) — c'est un artefact de Wine, pas du
-#      binaire : TESTEZ signApp.exe sur un VRAI Windows.
-#    - Le mode eID n'est PAS testable sous Wine (ni lecteur, ni carte, ni DLL
-#      beidpkcs11.dll). Seul le mode image est exerçable.
-#    - Résultat à valider impérativement sur un vrai Windows avant diffusion.
+#  Known limitations (cf. BUILD.md):
+#    - The GUI (signApp.exe) often does NOT display correctly UNDER Wine
+#      (Tcl/Tk + GDI bugs specific to Wine) — this is a Wine artifact, not the
+#      binary: TEST signApp.exe on a REAL Windows.
+#    - eID mode is NOT testable under Wine (no reader, no card, no
+#      beidpkcs11.dll DLL). Only image mode can be exercised.
+#    - The result must be validated on a real Windows before distribution.
 #
-#  Prérequis : wine (64 bits).  Ubuntu :  sudo apt install wine
-#  Usage :  ./build_windows_wine.sh
+#  Prerequisites: wine (64-bit).  Ubuntu:  sudo apt install wine
+#  Usage:  ./build_windows_wine.sh
 # ===================================================================
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -24,8 +24,8 @@ export WINEARCH=win64
 export WINEPREFIX="${WINEPREFIX:-$HOME/.wine-signapp}"
 export WINEDEBUG="${WINEDEBUG:--all}"
 
-# Python Windows utilisé sous Wine. 3.12 est le plus fiable sous Wine ; toutes
-# les roues (wheels) win_amd64 épinglées existent pour cp312
+# Windows Python used under Wine. 3.12 is the most reliable under Wine; all
+# the pinned win_amd64 wheels exist for cp312
 # (cryptography cp311-abi3, lxml/pillow/python-pkcs11/cffi cp312).
 PYVER="${PYVER:-3.12.8}"
 PYDIR='C:\Python312'
@@ -34,49 +34,49 @@ PYEXE="python-${PYVER}-amd64.exe"
 URL="https://www.python.org/ftp/python/${PYVER}/${PYEXE}"
 
 if ! command -v wine >/dev/null 2>&1; then
-  echo "ERREUR : wine n'est pas installé."
-  echo "         Installez-le (une seule étape sudo) :  sudo apt install wine"
-  echo "         puis relancez ce script."
+  echo "ERROR: wine is not installed."
+  echo "         Install it (a single sudo step):  sudo apt install wine"
+  echo "         then re-run this script."
   exit 1
 fi
 
-echo ">> Prefix Wine : $WINEPREFIX (WINEARCH=$WINEARCH)"
+echo ">> Wine prefix: $WINEPREFIX (WINEARCH=$WINEARCH)"
 WINEDLLOVERRIDES="mscoree=d;mshtml=d" wineboot --init >/dev/null 2>&1 || true
-# « wineserver » n'est pas toujours un binaire exposé dans le PATH (repack
-# Ubuntu) ; l'attente est facultative (l'installeur silencieux est synchrone).
+# "wineserver" is not always a binary exposed in the PATH (Ubuntu
+# repack); waiting is optional (the silent installer is synchronous).
 wait_wine() { wineserver -w 2>/dev/null || true; }
 wait_wine
 
 if [ ! -f "$WINPY_UNIX" ]; then
   if [ ! -f "$PYEXE" ]; then
-    echo ">> Téléchargement de Python $PYVER (Windows amd64)…"
+    echo ">> Downloading Python $PYVER (Windows amd64)…"
     if command -v wget >/dev/null 2>&1; then wget -q "$URL"
     else curl -fsSL -o "$PYEXE" "$URL"; fi
   fi
-  echo ">> Installation silencieuse de Python sous Wine (décline Mono/Gecko)…"
+  echo ">> Silent install of Python under Wine (declines Mono/Gecko)…"
   wine "$PYEXE" /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1 \
        Include_tcltk=1 Include_test=0 TargetDir="$PYDIR" || {
-         echo "ERREUR : l'installeur Python a échoué sous Wine."
-         echo "         Essayez : winetricks vcrun2019 corefonts ; puis relancez."
+         echo "ERROR: the Python installer failed under Wine."
+         echo "         Try: winetricks vcrun2019 corefonts ; then re-run."
          exit 1; }
   wait_wine
 fi
 
-[ -f "$WINPY_UNIX" ] || { echo "ERREUR : Python introuvable dans le prefix après installation."; exit 1; }
+[ -f "$WINPY_UNIX" ] || { echo "ERROR: Python not found in the prefix after installation."; exit 1; }
 
-echo ">> pip (wheels UNIQUEMENT : un wheel manquant échoue franchement)…"
+echo ">> pip (wheels ONLY: a missing wheel fails outright)…"
 wine "$WINPY_UNIX" -m pip install --upgrade pip
 wine "$WINPY_UNIX" -m pip install --only-binary=:all: \
      -r requirements.txt -r requirements-build.txt tzdata
 
-echo ">> PyInstaller sous Wine…"
+echo ">> PyInstaller under Wine…"
 wine "$WINPY_UNIX" -m PyInstaller --noconfirm --clean signApp.spec
 
 echo
-echo "=== Résultat (dist/) ==="
+echo "=== Result (dist/) ==="
 ls -la dist/ || true
 echo
-echo "⚠️  Validez signApp.exe / signApp-cli.exe sur un VRAI Windows :"
-echo "    - GUI : double-clic sur signApp.exe ;"
-echo "    - eID : middleware eID belge + lecteur + carte requis ;"
-echo "    - signez un PDF de test et vérifiez la signature (Adobe Reader / pyHanko)."
+echo "⚠️  Validate signApp.exe / signApp-cli.exe on a REAL Windows:"
+echo "    - GUI: double-click signApp.exe;"
+echo "    - eID: Belgian eID middleware + reader + card required;"
+echo "    - sign a test PDF and verify the signature (Adobe Reader / pyHanko)."
