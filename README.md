@@ -46,8 +46,9 @@ sont jamais écrasés** : en cas de collision, ` - 1`, ` - 2`, … sont ajoutés
   pour **chaque** document.
 - **Mode `image`** : rien de particulier — tampon PDF pur.
 - **Interface graphique** : `customtkinter` + un Python avec `tkinter` et un
-  affichage. L'aperçu de page (étape 6) utilise **poppler** (`pdftoppm`) ;
-  absent ⇒ cadre blanc (dégradation propre).
+  affichage. L'aperçu de page (étape 6) est rendu par **pypdfium2** (moteur
+  PDFium **embarqué**) — aucune dépendance externe à installer. (poppler /
+  `pdftoppm` n'est plus qu'un repli optionnel s'il est déjà présent.)
 
 ## Installation (depuis les sources)
 
@@ -114,8 +115,9 @@ Windows natif, Wine, et CI GitHub Actions).
 build_windows.bat       # Windows -> dist\signApp.exe , dist\signApp-cli.exe
 ```
 
-Le middleware eID et poppler restent des **dépendances runtime** et ne sont
-jamais embarqués.
+Le middleware eID reste une **dépendance runtime** (mode beid) et n'est jamais
+embarqué ; l'aperçu de page, lui, fonctionne sans rien installer (PDFium
+embarqué via pypdfium2).
 
 ## Tests
 

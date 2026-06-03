@@ -16,8 +16,10 @@ Dépendances RUNTIME volontairement NON embarquées (à installer sur la machine
 cible) — voir BUILD.md :
   * Middleware eID belge -> libbeidpkcs11.so / beidpkcs11.dll, chargé par chemin
     via pkcs11.lib() (mode beid uniquement). Spécifique à la machine + au lecteur.
-  * poppler (pdftoppm) -> aperçu de page dans la GUI ; absent = cadre blanc
-    (dégradation propre, cf. core.render_page_image).
+  * poppler (pdftoppm) -> repli OPTIONNEL pour l'aperçu de page. L'aperçu est
+    désormais rendu par pypdfium2 (PDFium embarqué dans le binaire GUI via les
+    hooks fournis), donc rien à installer côté utilisateur ; pdftoppm n'est
+    utilisé que s'il est déjà présent (cf. core.render_page_image).
 """
 
 import sys
@@ -117,6 +119,9 @@ gui_hidden += [
     "PIL.ImageTk",
     "PIL._tkinter_finder",
     "gui",  # module local importé paresseusement par gui_main
+    # Aperçu de page : moteur PDFium embarqué (rendu sans dépendance externe).
+    # Les hooks fournis (hook-pypdfium2*.py) embarquent la lib native.
+    "pypdfium2",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -130,6 +135,9 @@ CLI_EXCLUDES = [
     "PIL.ImageTk",
     "gui",
     "gui_main",
+    # L'aperçu de page est exclusivement GUI : pas de PDFium dans le binaire CLI.
+    "pypdfium2",
+    "pypdfium2_raw",
 ]
 
 # Icône optionnelle : déposez signApp.ico (Windows) / signApp.icns (macOS) à

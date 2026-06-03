@@ -105,11 +105,12 @@ Ces composants sont chargés dynamiquement et **ne peuvent pas** être empaquet�
   - macOS : `/usr/local/lib/libbeidpkcs11.dylib`
   - À installer depuis <https://eid.belgium.be>. Surchargez le chemin via `--lib`.
   - Nécessite aussi un **lecteur + carte eID insérée** + le service PC/SC.
-- **poppler (`pdftoppm`)** — uniquement pour l'**aperçu de page** de la GUI
-  (étape 6). Absent ⇒ cadre blanc (dégradation propre, aucune erreur). Sur
-  Windows, ajoutez les binaires poppler au `PATH` si vous voulez l'aperçu.
+L'**aperçu de page** de la GUI (étape 6) est rendu par **pypdfium2** (moteur
+PDFium **embarqué** dans l'exécutable) : rien à installer, sur aucun OS.
+`poppler` (`pdftoppm`) n'est plus qu'un **repli optionnel** utilisé seulement
+s'il est déjà présent sur la machine (cf. `core.render_page_image`).
 
-Le **mode image** ne dépend de rien de tout cela : il est pleinement
+Le **mode image** ne dépend d'aucun de ces composants : il est pleinement
 fonctionnel et testable sans matériel.
 
 ---

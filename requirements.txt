@@ -17,6 +17,7 @@ pyHanko==0.35.1
 pyhanko-beid-plugin==0.2.0
 pyhanko-certvalidator==0.31.1
 pyhanko-cli==0.4.0
+pypdfium2==5.9.0
 python-barcode==0.16.1
 python-pkcs11==0.9.4
 PyYAML==6.0.3

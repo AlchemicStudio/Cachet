@@ -135,8 +135,8 @@ frame: (1) template, (2) files, (3) output, (4) **Validate** → pass/fail table
 on a worker thread), (8) summary table.
 
 Step 6's `tkinter.Canvas` shows the **actual rendered template page** as its
-background (`core.render_page_image` via `pdftoppm`, cached per page; falls back
-to a white frame if poppler is missing). Prev/Next change the page; a click sets
+background (`core.render_page_image`: **pypdfium2** primary, `pdftoppm` fallback;
+cached per page; falls back to a white frame only if both are unavailable). Prev/Next change the page; a click sets
 the position, drawing a to-scale placeholder — the image (image mode) or a **3:1
 box of width page_w/5** (beid). The canvas **resizes with the window**:
 `<Configure>` on the toplevel → `_draw_page` recomputes the canvas size from the
@@ -190,8 +190,9 @@ national register number is embedded in every signature — mind PDF distributio
   needs hardware + a human and cannot be exercised headlessly.
 - **image mode**: nothing special — pure PDF stamping, fully testable headless.
 - **GUI**: `customtkinter` (pip) **and** a Python with `tkinter` + a display.
-  The step-6 page preview also wants `pdftoppm` (poppler-utils) to render the
-  template page; without it the canvas falls back to a blank white frame.
+  The step-6 page preview is rendered by **pypdfium2** (bundled PDFium, no
+  external binary); `pdftoppm` (poppler-utils) is only an optional fallback if
+  already present. Without either, the canvas falls back to a blank white frame.
 
 ### tkinter in this environment
 
@@ -234,8 +235,10 @@ Key spec facts (don't regress): no built-in PyInstaller hooks exist for
 excluded** (hard import in certvalidator) but its OpenSSL backend is never on
 this app's signing path. `tzdata` is collected **only on Windows** (pyHanko
 timestamps need a zoneinfo there). `upx=False` (UPX can corrupt crypto libs).
-The eID middleware (`libbeidpkcs11.so`/`beidpkcs11.dll`) and `pdftoppm` are
-**runtime deps, never bundled**.
+The eID middleware (`libbeidpkcs11.so`/`beidpkcs11.dll`) is a **runtime dep,
+never bundled**. The page preview uses **pypdfium2** (bundled in the GUI binary
+via the contrib hooks; excluded from the CLI binary), so poppler is no longer
+required — only an optional fallback.
 
 Build routes: `./build_linux.sh` (native), `build_windows.bat` (real Windows),
 `./build_windows_wine.sh` (Linux→Windows via Wine, best-effort), and

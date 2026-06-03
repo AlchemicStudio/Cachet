@@ -521,12 +521,54 @@ def pdf_rect_to_frame_rect(
 
 
 def render_page_image(pdf_path, page_index: int, px_width: int = 900):
-    """Rendu bitmap de la page `page_index` (0-based) via `pdftoppm` (poppler).
+    """Rendu bitmap de la page `page_index` (0-based) en image Pillow
+    (~px_width de large, ratio conservé), ou ``None`` si le rendu échoue.
 
-    Renvoie une image Pillow (~px_width de large, ratio conservé) ou ``None`` si
-    le rendu échoue (poppler absent, page invalide…). Utilisé comme fond du
-    cadre de sélection ; le code appelant retombe sur un cadre blanc si None.
+    Essaie d'abord **pypdfium2** (moteur PDFium embarqué DANS le paquet : aucune
+    dépendance externe, fonctionne tel quel dans l'exécutable PyInstaller sous
+    Windows/Linux/macOS), puis se rabat sur **pdftoppm** (poppler) s'il est
+    installé sur la machine. Utilisé comme fond du cadre de sélection ; le code
+    appelant retombe sur un cadre blanc si ``None``.
     """
+    img = _render_with_pdfium(pdf_path, page_index, px_width)
+    if img is not None:
+        return img
+    return _render_with_pdftoppm(pdf_path, page_index, px_width)
+
+
+def _render_with_pdfium(pdf_path, page_index: int, px_width: int):
+    """Rendu via pypdfium2 (PDFium embarqué). ``None`` si indisponible/échec.
+
+    L'import est PARESSEUX : le cœur reste importable sans pypdfium2 (ex. le
+    binaire CLI headless, où le paquet est volontairement exclu)."""
+    try:
+        import pypdfium2 as pdfium
+    except Exception:  # noqa: BLE001 - paquet absent
+        return None
+    pdf = None
+    try:
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        if not (0 <= page_index < len(pdf)):
+            return None
+        page = pdf[page_index]
+        w_pt, _ = page.get_size()                 # taille en points (1 pt = 1/72")
+        scale = (px_width / w_pt) if w_pt else 1.0  # scale=1.0 -> 72 dpi (px = pt)
+        img = page.render(scale=scale).to_pil().convert("RGB")
+        img.load()
+        return img
+    except Exception:  # noqa: BLE001 - rendu impossible -> fallback poppler
+        return None
+    finally:
+        if pdf is not None:
+            try:
+                pdf.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _render_with_pdftoppm(pdf_path, page_index: int, px_width: int):
+    """Rendu via `pdftoppm` (poppler) s'il est présent sur la machine. ``None``
+    sinon. Repli historique quand pypdfium2 est indisponible."""
     page_no = page_index + 1
     with tempfile.TemporaryDirectory() as td:
         prefix = os.path.join(td, "page")
