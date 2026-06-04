@@ -67,7 +67,11 @@ _HINT_LEVEL = (
 )
 _HINT_VAULT = (
     "Required. The address of your organisation's Azure Key Vault, where your "
-    "personal signing key and certificate are stored (ask your administrator)."
+    "personal signing key and certificate are stored (ask your administrator). "
+    "Note: the pre-filled https://login.live.com is the Microsoft sign-in "
+    "page, NOT a vault — a real Key Vault address looks like "
+    "https://<name>.vault.azure.net; replace it with your organisation's "
+    "vault before launching."
 )
 _HINT_KEY = (
     "Optional. Normally the key is derived from YOUR login (sig-<your-upn>), "
