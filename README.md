@@ -1,6 +1,6 @@
 # signApp
 
-Batch PDF signing for Belgian police/administrative workflows, usable from
+Batch PDF signing for Belgian administrative workflows, usable from
 both a **command line** and a **CustomTkinter GUI**, with three modes:
 
 - **`beid`** — qualified (QES-grade) cryptographic signatures with the Belgian
