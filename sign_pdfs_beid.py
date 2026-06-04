@@ -54,6 +54,9 @@ from pyhanko.pdf_utils.layout import (
 )
 from pyhanko.sign import PdfSignatureMetadata, signers, timestamps
 from pyhanko.sign.fields import SigFieldSpec, SigSeedSubFilter
+from pyhanko.sign.validation import validate_pdf_signature
+from pyhanko.sign.validation.dss import DocumentSecurityStore
+from pyhanko.sign.validation.errors import NoDSSFoundError
 from pyhanko.stamp import StaticStampStyle, TextStampStyle
 from pyhanko_certvalidator import ValidationContext
 
@@ -802,17 +805,98 @@ def build_signing_material(cfg: RunConfig) -> SigningMaterial:
     if level_needs_timestamp(cfg.pades_level):
         material.tsa_url = resolve_tsa_url(cfg.timestamp_url)
         material.timestamper = timestamps.HTTPTimeStamper(url=material.tsa_url)
-    if level_needs_ltv(cfg.pades_level):
-        import trust  # lazy: only LTV levels need the trusted-list machinery
+    # Anchors are needed to *sign* at b-lt/b-lta (revinfo gathering) and to
+    # *verify* at any level >= b-t (the eID chain must be trusted, R8).
+    need_anchors = level_needs_ltv(cfg.pades_level) or (
+        cfg.verify and level_needs_timestamp(cfg.pades_level)
+    )
+    if need_anchors:
+        import trust  # lazy: only network-bound levels need the trusted list
 
         material.trust_anchors = trust.get_trust_anchors(
             cfg.trust_list_url, refresh=cfg.refresh_trust_list
         )
+    if level_needs_ltv(cfg.pades_level):
         material.validation_context = ValidationContext(
             extra_trust_roots=material.trust_anchors,
             allow_fetching=True,
         )
     return material
+
+
+class SelfVerificationError(RuntimeError):
+    """Post-signing self-verification failed (level mismatch or invalid sig)."""
+
+
+def verify_signed_pdf(
+    path: Path,
+    expected_level: str,
+    *,
+    trust_anchors: list | None = None,
+) -> str:
+    """Re-open a signed PDF, validate it, and detect the achieved PAdES level.
+
+    Returns a detail label such as ``"PAdES-B-LTA, LTV ok"``; raises
+    ``SelfVerificationError`` when the signature does not validate or the
+    achieved level is below ``expected_level`` (R8 — a mismatch must fail the
+    document, never pass silently).
+
+    Level detection is structural, on pyHanko's validation output:
+    b-t = validated RFC 3161 signature timestamp present; b-lt = + DSS with
+    revocation material (OCSP/CRL); b-lta = + document timestamp chain.
+    The signature itself is validated with ``validate_pdf_signature`` against
+    the EU-trusted-list anchors (plus the system store, mirroring signing).
+    Full historical AdES-LTA re-validation is deliberately NOT run here: it
+    would re-require revinfo for the (free) TSA chain at every step and can
+    false-negative on perfectly good documents; the manual acceptance test
+    in BUILD.md covers it with `pyhanko sign validate --pretty-print`.
+    """
+    with path.open("rb") as f:
+        reader = PdfFileReader(f, strict=False)
+        regular = reader.embedded_regular_signatures
+        if not regular:
+            raise SelfVerificationError("no signature found in the output file")
+        emb = regular[-1]  # ours is the last one added
+        subfilter = str(emb.sig_object.get("/SubFilter"))
+        if subfilter != "/ETSI.CAdES.detached":
+            raise SelfVerificationError(
+                f"not a PAdES signature (SubFilter {subfilter})"
+            )
+        vc = ValidationContext(
+            extra_trust_roots=trust_anchors or [], allow_fetching=True
+        )
+        status = validate_pdf_signature(
+            emb, signer_validation_context=vc, ts_validation_context=vc
+        )
+        if not status.bottom_line:
+            raise SelfVerificationError(
+                f"signature failed validation: {status.summary()}"
+            )
+        ts = status.timestamp_validity
+        has_timestamp = ts is not None and ts.intact and ts.valid
+        try:
+            dss = DocumentSecurityStore.read_dss(reader)
+            has_revinfo = bool(dss.ocsps) or bool(dss.crls)
+        except NoDSSFoundError:
+            has_revinfo = False
+        has_doc_timestamp = bool(reader.embedded_timestamp_signatures)
+
+        detected = "b-b"
+        if has_timestamp:
+            detected = "b-t"
+            if has_revinfo:
+                detected = "b-lt"
+                if has_doc_timestamp:
+                    detected = "b-lta"
+        if PADES_LEVELS.index(detected) < PADES_LEVELS.index(expected_level):
+            raise SelfVerificationError(
+                f"requested PAdES-{expected_level.upper()} but the document "
+                f"only achieves PAdES-{detected.upper()}"
+            )
+        label = f"PAdES-{detected.upper()}"
+        if level_needs_ltv(detected):
+            label += ", LTV ok"
+        return label
 
 
 def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
@@ -869,16 +953,32 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
                     sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades_level,
                              identity, page_index=page - 1, pos=(x, y),
                              **sign_kwargs)
-                    detail = (f"signed (eID) — vignette page {page} "
-                              f"@ ({x:.0f}, {y:.0f}) — {label}")
+                    prefix = (f"signed (eID) — vignette page {page} "
+                              f"@ ({x:.0f}, {y:.0f})")
                 else:
                     sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades_level,
                              identity, **sign_kwargs)
-                    detail = f"signed (eID) — vignette — {label}"
+                    prefix = "signed (eID) — vignette"
+                # R8: re-open + validate, report the *achieved* level. A
+                # mismatch raises SelfVerificationError -> document failed.
+                if (cfg.verify and not cfg.legacy_cms
+                        and level_needs_timestamp(cfg.pades_level)):
+                    achieved = verify_signed_pdf(
+                        dst, cfg.pades_level,
+                        trust_anchors=material.trust_anchors,
+                    )
+                    detail = f"{prefix} — {achieved}"
+                else:
+                    detail = f"{prefix} — {label}"
             else:
                 insert_image_one(src, dst, cfg.image_path, page - 1, x, y)
                 detail = f"image inserted — page {page} @ ({x:.0f}, {y:.0f})"
             res = DocResult(src, dst, True, detail)
+        except SelfVerificationError as exc:
+            res = DocResult(
+                src, None, False,
+                f"failed — self-verification: {exc} (signed file kept: {dst.name})",
+            )
         except (requests.RequestException, timestamps.TimestampRequestError) as exc:
             # R10: name the endpoint, never downgrade the level silently.
             endpoints = material.tsa_url or "network endpoint"
@@ -996,7 +1096,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--no-verify", dest="verify", action="store_false",
-        help="Skip the post-signing self-verification (levels >= b-t).",
+        help="Skip the post-signing self-verification (levels >= b-t). "
+             "Also skips the EU trusted-list fetch at level b-t.",
     )
     return parser
 

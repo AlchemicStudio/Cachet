@@ -172,18 +172,20 @@ class BatchBeidWiring(TmpCase):
     def _run(self, cfg):
         calls = []
         saved = (core.open_eid_session, core.BEIDSigner, core.read_card_identity,
-                 core.sign_one, core.build_signing_material)
+                 core.sign_one, core.build_signing_material, core.verify_signed_pdf)
         core.open_eid_session = lambda *a, **k: object()
         core.BEIDSigner = lambda *a, **k: object()
         core.read_card_identity = lambda *a, **k: core.CardIdentity("X Y", None)
         core.sign_one = lambda *a, **k: calls.append((a, k))
-        # No network in tests: empty signing material regardless of level.
+        # No network in tests: empty signing material, canned verification.
         core.build_signing_material = lambda cfg: core.SigningMaterial()
+        core.verify_signed_pdf = lambda *a, **k: "PAdES-B-LTA, LTV ok"
         try:
             results = core.process_batch(cfg)
         finally:
             (core.open_eid_session, core.BEIDSigner, core.read_card_identity,
-             core.sign_one, core.build_signing_material) = saved
+             core.sign_one, core.build_signing_material,
+             core.verify_signed_pdf) = saved
         return calls, results
 
     def test_placement_passes_page_index_and_pos(self):
@@ -460,11 +462,22 @@ class SigningMaterialWiring(unittest.TestCase):
             self.assertIsNone(material.validation_context)
 
     def test_b_t_attaches_http_timestamper_only(self):
+        # verify=False: plain b-t needs no trust anchors (and no network here)
         material = core.build_signing_material(
-            self._cfg(pades_level="b-t", timestamp_url="http://tsa.example"))
+            self._cfg(pades_level="b-t", timestamp_url="http://tsa.example",
+                      verify=False))
         self.assertIsInstance(material.timestamper, core.timestamps.HTTPTimeStamper)
         self.assertEqual(material.tsa_url, "http://tsa.example")
         self.assertIsNone(material.validation_context)  # no LTV below b-lt
+        self.assertIsNone(material.trust_anchors)
+
+    def test_b_t_with_verification_fetches_anchors(self):
+        import trust
+        from unittest import mock
+        with mock.patch.object(trust, "get_trust_anchors", return_value=[]):
+            material = core.build_signing_material(self._cfg(pades_level="b-t"))
+        self.assertEqual(material.trust_anchors, [])  # fetched for R8
+        self.assertIsNone(material.validation_context)  # still no LTV embed
 
     def test_b_lta_builds_fetching_context_from_trust_anchors(self):
         import trust
@@ -477,6 +490,159 @@ class SigningMaterialWiring(unittest.TestCase):
         self.assertIsInstance(material.timestamper, core.timestamps.HTTPTimeStamper)
         self.assertIsNotNone(material.validation_context)
         self.assertEqual(material.trust_anchors, [])
+
+
+class SelfVerification(TmpCase):
+    """R8 verify_signed_pdf on REAL pyHanko output, fully offline.
+
+    Signs synthetic PDFs with an in-memory self-signed cert (SimpleSigner)
+    and pyHanko's DummyTimeStamper instead of the eID card + network TSA:
+    the level mapping and the verification logic are exercised end-to-end;
+    only the PKCS#11 hardware path stays a manual acceptance test.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import datetime
+        from cryptography import x509 as cx509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec, rsa
+        from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+        from asn1crypto import x509 as ax509, keys as akeys, crl as acrl
+        from pyhanko.sign import signers as psigners
+        from pyhanko.sign.timestamps.dummy_client import DummyTimeStamper
+        from pyhanko_certvalidator import ValidationContext
+        from pyhanko_certvalidator.registry import SimpleCertificateStore
+
+        def _key():
+            return ec.generate_private_key(ec.SECP256R1())
+
+        def _name(cn):
+            return cx509.Name([cx509.NameAttribute(NameOID.COMMON_NAME, cn)])
+
+        start = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
+        end = start + datetime.timedelta(days=3650)
+
+        def _build(cn, key, *, ca=False, eku=None, issuer=None, issuer_key=None):
+            b = (cx509.CertificateBuilder()
+                 .subject_name(_name(cn))
+                 .issuer_name(_name(issuer) if issuer else _name(cn))
+                 .public_key(key.public_key())
+                 .serial_number(cx509.random_serial_number())
+                 .not_valid_before(start).not_valid_after(end)
+                 .add_extension(cx509.BasicConstraints(ca=ca, path_length=None),
+                                critical=True)
+                 .add_extension(cx509.KeyUsage(
+                     digital_signature=True, content_commitment=True,
+                     key_encipherment=False, data_encipherment=False,
+                     key_agreement=False, key_cert_sign=ca, crl_sign=ca,
+                     encipher_only=False, decipher_only=False), critical=True))
+            if eku:
+                b = b.add_extension(cx509.ExtendedKeyUsage(eku), critical=False)
+            return b.sign(issuer_key or key, hashes.SHA256())
+
+        def _der_cert(c):
+            return ax509.Certificate.load(
+                c.public_bytes(serialization.Encoding.DER))
+
+        def _der_key(k):
+            return akeys.PrivateKeyInfo.load(k.private_bytes(
+                serialization.Encoding.DER,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption()))
+
+        # Self-signed CA that also signs documents (simplest trustable chain),
+        # a separate self-signed TSA cert, and a fresh empty CRL from the CA
+        # so b-lt/b-lta have revocation material to embed into the DSS.
+        ca_key = _key()
+        ca_cert = _build("Test Sign CA", ca_key, ca=True)
+        tsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        tsa_cert = _build("Test TSA", tsa_key,  # DummyTimeStamper is RSA-only
+                          eku=[ExtendedKeyUsageOID.TIME_STAMPING])
+        crl = (cx509.CertificateRevocationListBuilder()
+               .issuer_name(_name("Test Sign CA"))
+               .last_update(start).next_update(end)
+               .sign(ca_key, hashes.SHA256()))
+        cls.root = _der_cert(ca_cert)
+        cls.tsa_root = _der_cert(tsa_cert)
+        cls.crl = acrl.CertificateList.load(
+            crl.public_bytes(serialization.Encoding.DER))
+
+        cls.signer = psigners.SimpleSigner(
+            signing_cert=cls.root,
+            signing_key=_der_key(ca_key),
+            cert_registry=SimpleCertificateStore.from_certs([cls.root]),
+        )
+        cls.timestamper = DummyTimeStamper(
+            tsa_cert=cls.tsa_root,
+            tsa_key=_der_key(tsa_key),
+            certs_to_embed=SimpleCertificateStore.from_certs([cls.tsa_root]),
+        )
+        # Signing-time context: offline, pre-loaded CRL, both roots trusted
+        # (pyHanko validates the TSA chain against this same context).
+        cls.signing_vc = ValidationContext(
+            trust_roots=[cls.root, cls.tsa_root],
+            crls=[cls.crl],
+            allow_fetching=False,
+            revocation_mode="soft-fail",
+        )
+
+    def _sign(self, level: str) -> Path:
+        from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+        from pyhanko.sign import signers as psigners
+
+        src = make_pdf(self.p(f"{level}.pdf"), [(595, 842)])
+        dst = self.p(f"{level}_signed.pdf")
+        meta = core.PdfSignatureMetadata(
+            field_name="Sig1",
+            **core.signature_meta_kwargs(level, "sha256",
+                                         validation_context=self.signing_vc),
+        )
+        with src.open("rb") as inf:
+            w = IncrementalPdfFileWriter(inf, strict=False)
+            with dst.open("wb") as outf:
+                psigners.sign_pdf(w, meta, signer=self.signer,
+                                  timestamper=self.timestamper, output=outf)
+        return dst
+
+    def _verify(self, dst, expected):
+        return core.verify_signed_pdf(dst, expected,
+                                      trust_anchors=[self.root, self.tsa_root])
+
+    def test_b_t_detected(self):
+        self.assertEqual(self._verify(self._sign("b-t"), "b-t"), "PAdES-B-T")
+
+    def test_b_lt_detected_with_ltv(self):
+        self.assertEqual(self._verify(self._sign("b-lt"), "b-lt"),
+                         "PAdES-B-LT, LTV ok")
+
+    def test_b_lta_detected_with_ltv(self):
+        self.assertEqual(self._verify(self._sign("b-lta"), "b-lta"),
+                         "PAdES-B-LTA, LTV ok")
+
+    def test_mismatch_fails_not_passes(self):
+        dst = self._sign("b-t")  # only a timestamp, no LTV material
+        with self.assertRaises(core.SelfVerificationError) as ctx:
+            self._verify(dst, "b-lta")
+        self.assertIn("B-LTA", str(ctx.exception))
+        self.assertIn("B-T", str(ctx.exception))
+
+    def test_legacy_subfilter_rejected_as_non_pades(self):
+        from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
+        from pyhanko.sign import signers as psigners
+
+        src = make_pdf(self.p("legacy.pdf"), [(595, 842)])
+        dst = self.p("legacy_signed.pdf")
+        meta = core.PdfSignatureMetadata(
+            field_name="Sig1",
+            **core.signature_meta_kwargs("b-b", "sha256", legacy_cms=True),
+        )
+        with src.open("rb") as inf:
+            w = IncrementalPdfFileWriter(inf, strict=False)
+            with dst.open("wb") as outf:
+                psigners.sign_pdf(w, meta, signer=self.signer, output=outf)
+        with self.assertRaises(core.SelfVerificationError):
+            self._verify(dst, "b-b")
 
 
 class GuiImageEndToEnd(unittest.TestCase):
