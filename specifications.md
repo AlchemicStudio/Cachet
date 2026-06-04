@@ -102,8 +102,8 @@ Real eID + TSA + LTV signing remains a **manual acceptance test on real hardware
 - [x] `embed_validation_info=True` + fetching `ValidationContext` for b-lt/b-lta; `use_pades_lta=True` for b-lta.
 - [x] `--digest` pins `md_algorithm` (default sha256).
 - [x] `trust.py` fetches the EU LOTL → Belgian list → qualified eSig CA certs, with cache/TTL/refresh and clear offline errors; seeds the `ValidationContext` trust roots.
-- [ ] Post-signing self-verification detects achieved level/LTV, reports it in `DocResult.detail`, fails on mismatch; `--no-verify` skips.
-- [ ] RRN privacy warning printed in `beid` mode + summary note.
+- [x] Post-signing self-verification detects achieved level/LTV, reports it in `DocResult.detail`, fails on mismatch; `--no-verify` skips.
+- [x] RRN privacy warning printed in `beid` mode + summary note.
 - [x] No silent level downgrade on network failure; `b-b` and `image` work offline.
 - [ ] All “long-term archiving” false claims removed; README/CLAUDE.md/BUILD.md updated (flags, network requirement, free-vs-qualified TSA caveat, RRN).
 - [x] GUI exposes a level selector defaulting to b-lta; thread-safety invariants preserved.
