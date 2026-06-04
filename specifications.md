@@ -96,17 +96,17 @@ Real eID + TSA + LTV signing remains a **manual acceptance test on real hardware
 
 # 7. Acceptance criteria (the loop drives to all-checked)
 
-- [ ] `--pades-level {b-b,b-t,b-lt,b-lta}` exists, defaults to `b-lta`.
-- [ ] `--pades` is a deprecated no-op alias with a warning; `--legacy-cms` reaches the old `adbe.pkcs7.detached` path and is mutually exclusive with PAdES levels > b-b.
-- [ ] `--timestamp-url` (+ `SIGNAPP_TSA_URL`, default DigiCert free TSA) wired; `HTTPTimeStamper` attached for levels ≥ b-t.
-- [ ] `embed_validation_info=True` + fetching `ValidationContext` for b-lt/b-lta; `use_pades_lta=True` for b-lta.
-- [ ] `--digest` pins `md_algorithm` (default sha256).
-- [ ] `trust.py` fetches the EU LOTL → Belgian list → qualified eSig CA certs, with cache/TTL/refresh and clear offline errors; seeds the `ValidationContext` trust roots.
+- [x] `--pades-level {b-b,b-t,b-lt,b-lta}` exists, defaults to `b-lta`.
+- [x] `--pades` is a deprecated no-op alias with a warning; `--legacy-cms` reaches the old `adbe.pkcs7.detached` path and is mutually exclusive with PAdES levels > b-b.
+- [x] `--timestamp-url` (+ `SIGNAPP_TSA_URL`, default DigiCert free TSA) wired; `HTTPTimeStamper` attached for levels ≥ b-t.
+- [x] `embed_validation_info=True` + fetching `ValidationContext` for b-lt/b-lta; `use_pades_lta=True` for b-lta.
+- [x] `--digest` pins `md_algorithm` (default sha256).
+- [x] `trust.py` fetches the EU LOTL → Belgian list → qualified eSig CA certs, with cache/TTL/refresh and clear offline errors; seeds the `ValidationContext` trust roots.
 - [ ] Post-signing self-verification detects achieved level/LTV, reports it in `DocResult.detail`, fails on mismatch; `--no-verify` skips.
 - [ ] RRN privacy warning printed in `beid` mode + summary note.
-- [ ] No silent level downgrade on network failure; `b-b` and `image` work offline.
+- [x] No silent level downgrade on network failure; `b-b` and `image` work offline.
 - [ ] All “long-term archiving” false claims removed; README/CLAUDE.md/BUILD.md updated (flags, network requirement, free-vs-qualified TSA caveat, RRN).
-- [ ] GUI exposes a level selector defaulting to b-lta; thread-safety invariants preserved.
+- [x] GUI exposes a level selector defaulting to b-lta; thread-safety invariants preserved.
 - [ ] `requirements.txt` + `signApp.spec` updated for any new dependency; both binaries still build.
 - [ ] `python -m unittest -v` is green; `HeadlessImport` and the image-mode smoke test pass.
 
