@@ -89,6 +89,12 @@ for _dist in (
 # lxml: hook provided, but we make sure of the submodules (xpath/objectify...).
 common_hidden += collect_submodules("lxml")
 
+# trust.py (EU trusted-list provider for LTV signing): local module imported
+# lazily inside the core -> make it explicit. Its deps ride along: requests
+# (also a pyHanko dep) and platformdirs (otherwise only pulled in by
+# customtkinter, which the CLI binary excludes).
+common_hidden += ["trust", "requests", "platformdirs"]
+
 # tzdata: ON WINDOWS ONLY. pyHanko timestamps the signature via tzlocal,
 # which builds a zoneinfo.ZoneInfo there — but Windows has no system zoneinfo
 # database, so the "tzdata" package must be bundled. On Linux/macOS the system
