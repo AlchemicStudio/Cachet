@@ -66,6 +66,28 @@ git push -u origin main
 Then: **Actions** tab → run → **Artifacts** → `cachet-windows-latest` /
 `cachet-ubuntu-latest`. Can also be triggered manually (*workflow_dispatch*).
 
+## Release process (develop → main)
+
+Branch model: day-to-day work lands on **`develop`** (CI builds + tests every
+push, `.github/workflows/build.yml`); **merging `develop` into `main`
+publishes a release** (`.github/workflows/release.yml`):
+
+1. On `develop`, bump `__version__` in `sign_pdfs_beid.py` (single source of
+   truth — the CLI `--version` and the GUI title read it).
+2. Open a PR `develop` → `main` and merge it.
+3. The release workflow then: reads the version → checks the tag `v{version}`
+   does not already exist → runs the unit tests → builds **both** executables
+   on Windows AND Linux → smoke-tests the frozen CLI → packages
+   `cachet-{v}-linux-x86_64.tar.gz` + `cachet-{v}-windows-x86_64.zip` →
+   creates the tag and a **GitHub Release** with auto-generated notes and the
+   two archives attached.
+4. Merging without bumping `__version__` is safe: the workflow detects the
+   existing tag and skips publishing (notice in the run log).
+
+A failed build/test on either OS blocks the release (`fail-fast`). The
+manual eID acceptance test (above) is NOT gated by CI — run it before
+merging when the signing path changed.
+
 The CI's Python version is `3.13` (variable `PYTHON_VERSION` at the top of the
 workflow; `3.14` works too).
 

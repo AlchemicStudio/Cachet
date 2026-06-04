@@ -225,7 +225,9 @@ place) → **7.** launch → **8.** per-document summary.
 
 The project compiles into **two standalone binaries** per OS (a windowed GUI
 `cachet`, a console CLI `cachet-cli`) — no Python required on the target
-machine. See **[BUILD.md](BUILD.md)** for all the routes (native Linux, native
+machine. Official builds are published as **GitHub Releases**: merging
+`develop` into `main` automatically tags `v{version}` and attaches the
+Linux/Windows packages (see *Release process* in BUILD.md). See **[BUILD.md](BUILD.md)** for all the routes (native Linux, native
 Windows, Wine, and GitHub Actions CI).
 
 ```bash

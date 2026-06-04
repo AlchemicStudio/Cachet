@@ -1,0 +1,153 @@
+name: Release
+
+# Publishes a GitHub Release when `develop` is merged into `main`.
+#
+# Flow:
+#   1. Bump __version__ in sign_pdfs_beid.py on develop (single source of
+#      truth), merge develop -> main.
+#   2. This workflow reads the version; if the tag v{version} does not exist
+#      yet, it builds both executables on Windows AND Linux (same recipe as
+#      ci/build.yml), packages them, tags v{version} and publishes a Release
+#      with auto-generated notes and the binaries attached.
+#   3. If the tag already exists (merge without a version bump), the run
+#      exits early with a notice — nothing is republished.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create tags + releases
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      should_release: ${{ steps.v.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read __version__ and check the tag
+        id: v
+        run: |
+          VERSION=$(python3 -c "import re, pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('sign_pdfs_beid.py').read_text(encoding='utf-8')).group(1))")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "::notice::Tag v${VERSION} already exists - skipping release. Bump __version__ in sign_pdfs_beid.py on develop to publish."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Will release v${VERSION}."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: true # a broken build on either OS must block the release
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      # Gate the release on the test suite (Linux only: headless, the GUI
+      # tests skip without a display; on the Windows runner Tk could open
+      # real windows and hang the job).
+      - name: Unit tests
+        if: runner.os == 'Linux'
+        run: python -m unittest -v
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm --clean cachet.spec
+
+      - name: Smoke test (CLI image mode, no eID hardware)
+        shell: bash
+        run: |
+          python - <<'PY'
+          from test_sign_pdfs_beid import make_pdf, make_png
+          make_pdf("smoke.pdf", [(595, 842)])
+          make_png("sig.png")
+          print("fixtures written")
+          PY
+          CLI=$(ls dist/cachet-cli* | head -1)
+          "$CLI" --version
+          "$CLI" --mode image --image-path sig.png --input smoke.pdf \
+                 --output smoke_out --page 1 --x 100 --y 100
+          test -n "$(ls smoke_out/*.pdf 2>/dev/null)" || { echo "FAIL: no output PDF"; exit 1; }
+          echo "OK: image mode works in the frozen binary."
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          V=${{ needs.version.outputs.version }}
+          tar -czf "cachet-${V}-linux-x86_64.tar.gz" -C dist cachet cachet-cli
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          V=${{ needs.version.outputs.version }}
+          7z a "cachet-${V}-windows-x86_64.zip" ./dist/cachet.exe ./dist/cachet-cli.exe
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}
+          path: |
+            cachet-*-linux-x86_64.tar.gz
+            cachet-*-windows-x86_64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish v${{ needs.version.outputs.version }}
+    needs: [version, build]
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: packages
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          name: Cachet v${{ needs.version.outputs.version }}
+          generate_release_notes: true
+          make_latest: true
+          files: packages/*
+          fail_on_unmatched_files: true
+          body: |
+            Standalone binaries (no Python required):
+            - `cachet-…-linux-x86_64.tar.gz` — `cachet` (GUI) + `cachet-cli` (console)
+            - `cachet-…-windows-x86_64.zip` — `cachet.exe` (GUI) + `cachet-cli.exe` (console)
+
+            Runtime requirements (beid mode): Belgian eID middleware + reader.
+            Levels ≥ b-t need network (TSA / trust lists / OCSP-CRL) — see BUILD.md.
