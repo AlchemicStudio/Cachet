@@ -105,10 +105,10 @@ Real eID + TSA + LTV signing remains a **manual acceptance test on real hardware
 - [x] Post-signing self-verification detects achieved level/LTV, reports it in `DocResult.detail`, fails on mismatch; `--no-verify` skips.
 - [x] RRN privacy warning printed in `beid` mode + summary note.
 - [x] No silent level downgrade on network failure; `b-b` and `image` work offline.
-- [ ] All “long-term archiving” false claims removed; README/CLAUDE.md/BUILD.md updated (flags, network requirement, free-vs-qualified TSA caveat, RRN).
+- [x] All “long-term archiving” false claims removed; README/CLAUDE.md/BUILD.md updated (flags, network requirement, free-vs-qualified TSA caveat, RRN).
 - [x] GUI exposes a level selector defaulting to b-lta; thread-safety invariants preserved.
-- [ ] `requirements.txt` + `signApp.spec` updated for any new dependency; both binaries still build.
-- [ ] `python -m unittest -v` is green; `HeadlessImport` and the image-mode smoke test pass.
+- [x] `requirements.txt` + `signApp.spec` updated for any new dependency; both binaries still build.
+- [x] `python -m unittest -v` is green; `HeadlessImport` and the image-mode smoke test pass.
 
 ---
 
