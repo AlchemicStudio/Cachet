@@ -145,3 +145,48 @@ Real Entra login + Key Vault signing + internal-CA LTV is a **manual acceptance 
 # 10. Constraints recap
 
 Ship a working **per-user AES** `azure` mode that reuses the existing B-LTA pipeline. Confirm every pyHanko / pyhanko-certvalidator / Azure SDK API against context7 before coding. Keep `beid`, `image`, and the no-tkinter/headless invariants intact. Trust anchors for `azure` are the **internal CA**, never the EU LOTL. One interactive login per batch. Commit per green step. Never fabricate passing tests for the real login/signing path. Respect the out-of-scope list.
+---
+
+# Appendix — §1 reconciliation notes (actual code, 2026-06-04)
+
+Verified with serena against the current tree (HEAD 03c9ae3). The spec's
+assumptions hold; how each target maps onto the real code:
+
+- **`RunConfig`** (sign_pdfs_beid.py:705): already carries `pades_level`
+  (default `"b-lta"`), `timestamp_url`, `trust_list_url`, `digest`, `verify`,
+  `legacy_cms`, `refresh_trust_list`. The azure fields are pure additions.
+- **`sign_one()`** (line 406): signature
+  `(signer, src, dst, field_name, pades_level, identity, page_index, pos, *,
+  digest, legacy_cms, timestamper, validation_context)` — it already treats
+  the signer as an opaque pyHanko `Signer` and the identity as
+  `CardIdentity(name, photo)`; R7 reduces to loosening the `BEIDSigner` type
+  hint/docstring and adding `read_cert_identity()` (photo=None works:
+  `build_stamp_style` already supports it).
+- **`build_signing_material(cfg) -> SigningMaterial`** (line 783): the
+  existing once-per-batch seam (timestamper + ValidationContext + anchors;
+  tests stub it). The §6 "validation-context helper selected by mode" slots
+  here: beid keeps `trust.get_trust_anchors()` (EU LOTL), azure loads
+  `--azure-trust-anchors` PEMs instead. EU-TL anchors are currently passed as
+  `extra_trust_roots` because pyHanko validates the TSA chain against the
+  same context (pdf_signer.py:753) — the SAME consideration applies to the
+  internal-CA context in azure mode (the public TSA must stay validatable),
+  so internal anchors are ALSO passed as extra_trust_roots, not trust_roots.
+- **`verify_signed_pdf(path, expected_level, *, trust_anchors)`** (line 831):
+  already mode-agnostic — R9 is just "pass the internal anchors".
+- **`process_batch()`** (line 902): per-mode branch + detail-prefix
+  construction; azure adds a third branch with setup-once (R6) and the
+  `signed (Azure, <upn>) — <level>` prefix.
+- **Detail labels**: `signature_level_label()` + the R8 verification suffix
+  (`PAdES-B-LTA, LTV ok`) are reused as-is.
+- **Tests**: `_Args` (argparse mimic) must gain the azure defaults;
+  `BatchBeidWiring` shows the stubbing pattern to clone for azure batch
+  wiring; `SelfVerification` already proves the verifier on real signatures.
+- **GUI**: step-5 row hosts the mode radios + level selector; the azure
+  panel and sign-in action extend that step; worker-thread/queue/after()
+  invariants unchanged.
+- **Spec/packaging**: signApp.spec collects common engine packages into BOTH
+  binaries via `common_*` lists — azure packages go there (CLI keeps azure).
+- Deviation note: the loop prompt says to record reconciliation notes "in
+  task.md"; the spec's Mission says persist the spec to `task-azure.md`.
+  Both are kept: task-azure.md = spec + these notes; the §9 checklist is
+  ticked in BOTH files as criteria complete.
