@@ -24,6 +24,12 @@ Important:
 
 from __future__ import annotations
 
+# Single source of truth for the application version. Bump it on `develop`;
+# merging develop -> main triggers the release workflow, which tags
+# v{__version__} and publishes the binaries (see .github/workflows/release.yml
+# and BUILD.md "Release process").
+__version__ = "1.0.0"
+
 import argparse
 import dataclasses
 import io
@@ -1186,6 +1192,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--gui", action="store_true", help="Launch the graphical interface (CustomTkinter)."
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"Cachet {__version__}"
     )
     parser.add_argument(
         "--template", default=None, help="Template PDF to validate the input files."

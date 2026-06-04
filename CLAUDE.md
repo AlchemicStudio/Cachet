@@ -324,7 +324,12 @@ must stay available in the **CLI** binary (do NOT add azure to CLI_EXCLUDES).
 
 Build routes: `./build_linux.sh` (native), `build_windows.bat` (real Windows),
 `./build_windows_wine.sh` (Linux→Windows via Wine, best-effort), and
-`.github/workflows/build.yml` (CI matrix, windows+linux, artifacts). Verify
+`.github/workflows/build.yml` (CI matrix, windows+linux, artifacts — runs on
+`develop` pushes and PRs). **Releases**: merging `develop` into `main` runs
+`.github/workflows/release.yml`, which tags `v{__version__}` (read from
+`sign_pdfs_beid.py` — bump it on develop, it is the single source of truth)
+and publishes a GitHub Release with both packaged binaries; an existing tag
+makes the workflow skip gracefully. See BUILD.md "Release process". Verify
 headlessly: CLI `--help`, image-mode end-to-end, a PKCS#11 native-load canary
 (`--lib` at a dummy `.so` → expect a PKCS#11 error, not `ImportError`), and the
 GUI binary launched on `DISPLAY=:0` + screenshot. Real eID signing needs

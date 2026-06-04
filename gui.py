@@ -40,7 +40,7 @@ class CachetApp(ctk.CTk):
 
     def __init__(self, args):
         super().__init__()
-        self.title("Cachet — PDF signing")
+        self.title(f"Cachet {core.__version__} — PDF signing")
         self.geometry("900x900")
         _style = ttk.Style()
         _style.configure("Treeview", rowheight=30, font=("", 11))   # tall rows, full text

@@ -384,6 +384,14 @@ class NewFlagParsing(TmpCase):
         argv = ["--input", str(self.a), "--output", str(self.tmp), *extra]
         return core.resolve_config(core.build_arg_parser().parse_args(argv))
 
+    def test_version_flag(self):
+        import contextlib, io
+        buf = io.StringIO()
+        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stdout(buf):
+            core.build_arg_parser().parse_args(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(buf.getvalue().strip(), f"Cachet {core.__version__}")
+
     def test_default_level_is_b_lta(self):
         cfg = self.parse()
         self.assertEqual(cfg.pades_level, "b-lta")

@@ -1,12 +1,12 @@
 name: Build executables
 
-# Builds both executables (windowed cachet + console cachet-cli) on
+# CI: builds both executables (windowed cachet + console cachet-cli) on
 # Windows AND Linux using the shared cachet.spec, then publishes the
-# downloadable artifacts. Triggered on push/tag/manual.
+# downloadable artifacts. Runs on develop and on pull requests; pushes to
+# main are handled by release.yml, which builds AND publishes a Release.
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
+    branches: [develop]
   pull_request:
   workflow_dispatch:
 
@@ -43,6 +43,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-build.txt
+
+      # Headless: the GUI tests skip without a display. Linux only — on the
+      # Windows runner Tk could open real windows and hang the job.
+      - name: Unit tests
+        if: runner.os == 'Linux'
+        run: python -m unittest -v
 
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm --clean cachet.spec
