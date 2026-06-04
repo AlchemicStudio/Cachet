@@ -20,6 +20,7 @@ mode).
 
 from __future__ import annotations
 
+import os
 import queue
 import threading
 from pathlib import Path
@@ -53,7 +54,17 @@ class SignApp(ctk.CTk):
         self.valid_paths: list[Path] = []
         self.output_dir: Path | None = None
         self.mode_var = ctk.StringVar(value="beid")
-        self.pades_level_var = ctk.StringVar(value="b-lta")  # PAdES level (beid mode)
+        self.pades_level_var = ctk.StringVar(value="b-lta")  # PAdES level
+        # azure mode state (SIGNAPP_AZURE_* env vars pre-fill the panel).
+        self.azure_vault_var = ctk.StringVar(
+            value=os.environ.get(core.ENV_AZURE_VAULT_URL, ""))
+        self.azure_key_var = ctk.StringVar(
+            value=os.environ.get(core.ENV_AZURE_KEY_NAME, ""))
+        self.azure_auth_var = ctk.StringVar(value="interactive")  # GUI default
+        self.azure_anchors_path: Path | None = (
+            Path(p) if (p := os.environ.get(core.ENV_AZURE_TRUST_ANCHORS)) else None
+        )
+        self._azure_login_q: queue.Queue | None = None
         self.image_path: Path | None = None
         self.cur_page = 0                         # 0-based, for the preview
         self.place_page: int | None = None        # 1-based, chosen position
@@ -107,6 +118,8 @@ class SignApp(ctk.CTk):
                            value="beid", command=self._refresh_placement_section).pack(side="left", padx=(0, 16))
         ctk.CTkRadioButton(row, text="Image insertion", variable=self.mode_var,
                            value="image", command=self._refresh_placement_section).pack(side="left")
+        ctk.CTkRadioButton(row, text="Azure (Microsoft login)", variable=self.mode_var,
+                           value="azure", command=self._refresh_placement_section).pack(side="left", padx=(16, 0))
         ctk.CTkLabel(row, text="PAdES level:").pack(side="left", padx=(16, 4))
         ctk.CTkOptionMenu(row, variable=self.pades_level_var,
                           values=list(core.PADES_LEVELS), width=110).pack(side="left")
@@ -114,6 +127,34 @@ class SignApp(ctk.CTk):
         ctk.CTkLabel(root, text="⚠ eID signatures embed the signer's national "
                                 "register number (RRN) — mind PDF distribution.",
                      text_color=("gray25", "gray70")).pack(anchor="w")
+
+        # Azure panel (shown only in azure mode; see _refresh_placement_section).
+        # Signs with the user's personal Key Vault certificate — an advanced
+        # (AES), not qualified, signature; one Microsoft login per batch.
+        self.azure_section = ctk.CTkFrame(root)
+        arow1 = ctk.CTkFrame(self.azure_section, fg_color="transparent")
+        arow1.pack(fill="x", pady=(6, 2), padx=6)
+        ctk.CTkLabel(arow1, text="Vault URL:").pack(side="left")
+        ctk.CTkEntry(arow1, textvariable=self.azure_vault_var, width=320).pack(
+            side="left", padx=(4, 16))
+        ctk.CTkLabel(arow1, text="Key name (optional override):").pack(side="left")
+        ctk.CTkEntry(arow1, textvariable=self.azure_key_var, width=160).pack(
+            side="left", padx=4)
+        arow2 = ctk.CTkFrame(self.azure_section, fg_color="transparent")
+        arow2.pack(fill="x", pady=2, padx=6)
+        ctk.CTkButton(arow2, text="Internal CA chain (PEM)…",
+                      command=self._pick_azure_anchors).pack(side="left")
+        self.azure_anchors_lbl = ctk.CTkLabel(
+            arow2, text=str(self.azure_anchors_path or "(required for b-lt/b-lta)"))
+        self.azure_anchors_lbl.pack(side="left", padx=8)
+        ctk.CTkLabel(arow2, text="Auth:").pack(side="left", padx=(16, 4))
+        ctk.CTkOptionMenu(arow2, variable=self.azure_auth_var,
+                          values=list(core.AZURE_AUTH_METHODS), width=130).pack(side="left")
+        self.azure_login_btn = ctk.CTkButton(
+            arow2, text="Sign in with Microsoft", command=self._azure_sign_in)
+        self.azure_login_btn.pack(side="left", padx=(16, 4))
+        self.azure_login_lbl = ctk.CTkLabel(arow2, text="(not signed in)")
+        self.azure_login_lbl.pack(side="left", padx=4)
 
         # 6. page + position (BOTH modes; the image choice appears only in image mode)
         self.image_section = ctk.CTkFrame(root)
@@ -167,14 +208,73 @@ class SignApp(ctk.CTk):
             table.delete(item)
 
     def _refresh_placement_section(self) -> None:
-        # Section visible in BOTH modes (placement of the vignette OR the
-        # image). Placed BEFORE "7. Run" to respect the workflow order.
+        # Placement section visible in ALL modes (vignette OR image). Placed
+        # BEFORE "7. Run" to respect the workflow order.
         self.image_section.pack(fill="both", expand=True, pady=6, before=self._after_image_anchor)
         if self.mode_var.get() == "image":
             self.image_row.pack(fill="x", before=self._nav_row)   # image choice
         else:
-            self.image_row.pack_forget()                          # beid: no image
+            self.image_row.pack_forget()                  # beid/azure: no image
+        if self.mode_var.get() == "azure":
+            self.azure_section.pack(fill="x", pady=4, before=self.image_section)
+        else:
+            self.azure_section.pack_forget()
         self._draw_page()
+
+    # ------------------------------------------------------------ azure auth
+    def _pick_azure_anchors(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Internal CA chain (root + intermediates)",
+            filetypes=[("Certificates", "*.pem *.crt *.cer *.der"),
+                       ("All files", "*.*")])
+        if path:
+            self.azure_anchors_path = Path(path)
+            self.azure_anchors_lbl.configure(text=path)
+
+    def _azure_sign_in(self) -> None:
+        """Interactive Microsoft login on a WORKER thread (system browser /
+        device code), result delivered through a queue + after() — tkinter
+        is never touched off the main thread. The credential is cached
+        process-wide (azure_signer.get_cached_credential), so the batch
+        reuses this login instead of prompting again."""
+        self.azure_login_btn.configure(state="disabled")
+        self.azure_login_lbl.configure(text="signing in…")
+        self._azure_login_q = queue.Queue()
+        method = self.azure_auth_var.get()
+
+        def worker(q: queue.Queue) -> None:
+            try:
+                import azure_signer as az
+
+                user = az.acquire_user(az.get_cached_credential(method))
+                q.put(("ok", user.upn))
+            except Exception as exc:  # noqa: BLE001 - report, don't crash
+                q.put(("err", str(exc) or exc.__class__.__name__))
+
+        threading.Thread(target=worker, args=(self._azure_login_q,),
+                         daemon=True).start()
+        self.after(100, self._poll_azure_login)
+
+    def _poll_azure_login(self) -> None:
+        if self._azure_login_q is None:
+            return
+        try:
+            if not self.winfo_exists():  # window closed mid-login
+                return
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            kind, payload = self._azure_login_q.get_nowait()
+        except queue.Empty:
+            self.after(100, self._poll_azure_login)
+            return
+        self._azure_login_q = None
+        self.azure_login_btn.configure(state="normal")
+        if kind == "ok":
+            self.azure_login_lbl.configure(text=f"signed in as {payload}")
+        else:
+            self.azure_login_lbl.configure(text="(not signed in)")
+            self.status_lbl.configure(text=f"Microsoft sign-in failed: {payload}")
 
     # -------------------------------------------------------------- actions
     def _pick_template(self) -> None:
@@ -355,6 +455,13 @@ class SignApp(ctk.CTk):
             page=self.place_page,
             x=self.place_x,
             y=self.place_y,
+            # azure settings (ignored by the other modes). The worker batch
+            # reuses the credential cached by "Sign in with Microsoft"; if
+            # the user skipped it, the login happens on the worker thread.
+            azure_vault_url=self.azure_vault_var.get().strip() or None,
+            azure_key_name=self.azure_key_var.get().strip() or None,
+            azure_auth=self.azure_auth_var.get(),
+            azure_trust_anchors=self.azure_anchors_path,
         )
         try:
             core.validate_config(cfg)

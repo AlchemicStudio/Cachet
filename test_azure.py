@@ -521,6 +521,76 @@ class BatchAzureWiring(TmpCase):
         self.assertIn("page 2", results[0].detail)
 
 
+class AzureSigningMaterial(TmpCase):
+    """build_signing_material: azure uses the INTERNAL CA, never the LOTL."""
+
+    def setUp(self):
+        super().setUp()
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        self.anchors = self.p("ca.pem")
+        self.anchors.write_text(AnchorLoading._pem(
+            make_self_signed(ec.generate_private_key(ec.SECP256R1()), "Root")))
+
+    def _cfg(self, **kw):
+        kw.setdefault("inputs", [Path("x.pdf")])
+        kw.setdefault("output", Path("out"))
+        kw.setdefault("mode", "azure")
+        kw.setdefault("azure_vault_url", "https://v.example")
+        return core.RunConfig(**kw)
+
+    def test_b_lta_uses_internal_anchors_never_the_lotl(self):
+        import trust
+
+        cfg = self._cfg(azure_trust_anchors=self.anchors,
+                        timestamp_url="http://tsa.example")
+        with mock.patch.object(
+                trust, "get_trust_anchors",
+                side_effect=AssertionError("EU LOTL must NOT be used in azure mode")):
+            material = core.build_signing_material(cfg)
+        self.assertEqual(len(material.trust_anchors), 1)  # from the PEM file
+        self.assertIsNotNone(material.validation_context)  # embed_validation_info
+        self.assertIsInstance(material.timestamper, core.timestamps.HTTPTimeStamper)
+
+    def test_azure_b_b_builds_nothing(self):
+        material = core.build_signing_material(self._cfg(pades_level="b-b"))
+        self.assertIsNone(material.timestamper)
+        self.assertIsNone(material.validation_context)
+        self.assertIsNone(material.trust_anchors)
+
+
+class GuiAzurePanel(unittest.TestCase):
+    """Azure panel toggling in the GUI. Skipped without a display."""
+
+    def setUp(self):
+        try:
+            import tkinter
+            tkinter.Tk().destroy()
+            import gui  # noqa: F401
+        except Exception as exc:  # noqa: BLE001
+            self.skipTest(f"tkinter/GUI unavailable: {exc}")
+
+    def test_azure_panel_toggles_with_mode(self):
+        import gui
+
+        app = gui.SignApp(SimpleNamespace(lib=None))
+        try:
+            app.update()
+            app.mode_var.set("azure")
+            app._refresh_placement_section()
+            app.update()
+            self.assertTrue(app.azure_section.winfo_manager())  # shown
+            self.assertFalse(app.image_row.winfo_manager())     # no image picker
+            self.assertEqual(app.azure_auth_var.get(), "interactive")
+            app.mode_var.set("image")
+            app._refresh_placement_section()
+            app.update()
+            self.assertFalse(app.azure_section.winfo_manager())  # hidden again
+            self.assertTrue(app.image_row.winfo_manager())
+        finally:
+            app.destroy()
+
+
 class CredentialCanary(unittest.TestCase):
     """azure path fails cleanly with actionable errors — no real login."""
 
