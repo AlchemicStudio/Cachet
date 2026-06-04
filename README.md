@@ -43,7 +43,8 @@ overwritten**: on collision, ` - 1`, ` - 2`, … are appended.
   (<https://eid.belgium.be>), which provides the PKCS#11 library
   (`libbeidpkcs11.so` / `beidpkcs11.dll` / `…dylib`), a **reader + inserted eID
   card**, and the **PC/SC** service (`pcscd`) running. The PIN is requested for
-  **each** document.
+  **each** document. **Levels ≥ b-t additionally need network access** (TSA,
+  EU trusted list, OCSP/CRL — see *Signature levels* below); `b-b` is offline.
 - **`image` mode**: nothing special — pure PDF stamping.
 - **Graphical interface**: `customtkinter` + a Python with `tkinter` and a
   display. The page preview (step 6) is rendered by **pypdfium2** (the
@@ -63,8 +64,11 @@ python3 -m venv venv
 ## Usage — command line
 
 ```bash
-# eID signing (vignette bottom-right of the last page):
-./venv/bin/python sign_pdfs_beid.py --input ../pdfs --output ../signes --mode beid --pades
+# eID signing (vignette bottom-right of the last page), PAdES B-LTA by default:
+./venv/bin/python sign_pdfs_beid.py --input ../pdfs --output ../signes --mode beid
+
+# eID signing at a lighter level (basic signature, fully offline):
+./venv/bin/python sign_pdfs_beid.py --input ../pdfs --output ../signes --pades-level b-b
 
 # Image stamp (no card), validated against a template:
 ./venv/bin/python sign_pdfs_beid.py --mode image \
@@ -87,9 +91,47 @@ python3 -m venv venv
 | `--image-path <img>` | image to stamp (**required** in `--mode image`). |
 | `--page <N>` | target page, **1-based**. Image: insertion page. beID: vignette page. |
 | `--x <pt> --y <pt>` | lower-left corner, in points from the page's bottom-left. beID: **omit both ⇒ bottom-right of the last page**. |
-| `--pades` | **PAdES** signature (long-term archiving). |
+| `--pades-level <lvl>` | PAdES baseline level: `b-b`, `b-t`, `b-lt`, `b-lta` (**default `b-lta`**). See *Signature levels* below. |
+| `--timestamp-url <url>` | RFC 3161 TSA for levels ≥ b-t. Precedence: flag > `SIGNAPP_TSA_URL` env > `http://timestamp.digicert.com`. |
+| `--trust-list-url <url>` | EU LOTL URL seeding the LTV trust anchors. Precedence: flag > `SIGNAPP_LOTL_URL` env > the official EU URL. |
+| `--refresh-trust-list` | force re-download of the EU trusted list (bypass the 24 h cache). |
+| `--digest <alg>` | signature digest: `sha256` (default), `sha384`, `sha512`. |
+| `--no-verify` | skip the post-signing self-verification (levels ≥ b-t). |
+| `--pades` | **deprecated no-op** (PAdES is now the default); use `--pades-level`. |
+| `--legacy-cms` | **deprecated**: legacy non-PAdES `adbe.pkcs7.detached` signature (no timestamp, no LTV). Incompatible with levels above b-b. |
 | `--lib <path>` | path to the eID PKCS#11 library (otherwise OS-default value). |
 | `--field <name>` | base name of the signature field (beid mode). |
+
+### Signature levels (PAdES baseline, ETSI EN 319 142-1)
+
+| Level | Adds | Network needed |
+|---|---|---|
+| `b-b` | basic eID signature | none (offline) |
+| `b-t` | + trusted RFC 3161 timestamp | TSA (+ EU trusted list unless `--no-verify`) |
+| `b-lt` | + revocation info (OCSP/CRL) embedded in the document (LTV) | TSA, EU trusted list, OCSP/CRL endpoints |
+| `b-lta` | + archival document-timestamp chain (**default**) | same as b-lt |
+
+- **Long-term validation (LTV)**: from `b-lt` upward, everything needed to
+  validate the signature later (CA certificates from the **EU trusted list**,
+  OCSP/CRL responses) is embedded at signing time, so the PDF stays verifiable
+  after certificates expire. `b-lta` adds a document timestamp so the evidence
+  chain itself stays provable — for genuine archival, that chain must be
+  **renewed periodically** (see BUILD.md).
+- **⚠ Free vs qualified timestamps**: the default TSA
+  (`http://timestamp.digicert.com`) is free and yields *technically valid*
+  B-T/B-LTA signatures, but **not qualified timestamps** in the eIDAS sense.
+  For genuine qualified long-term preservation, point `--timestamp-url` at a
+  **qualified** TSA (see the EU trusted list for QTSPs offering QTST services).
+- **Self-verification**: after writing each signed PDF (levels ≥ b-t), the file
+  is re-opened and validated, and the *achieved* level is reported in the
+  summary (e.g. `PAdES-B-LTA, LTV ok`). A mismatch marks the document failed —
+  the level is **never silently downgraded**; `--no-verify` skips this check.
+- **Offline behaviour**: `b-b` and `image` mode work fully offline. Levels
+  ≥ b-t fail with an actionable error naming the unreachable endpoint (TSA,
+  EU trusted list, OCSP/CRL).
+- **🔒 Privacy**: the signer's **national register number (RRN)** is embedded
+  in every eID signature (it is part of the certificate). The CLI warns at
+  startup and in the summary — mind how signed PDFs are distributed.
 
 > Backward compatibility: the legacy positional form `inputs… output_folder`
 > is still accepted if `--input`/`--output` are absent.
@@ -98,7 +140,7 @@ python3 -m venv venv
 
 A vertical wizard walks through the flow: **1.** template → **2.** files →
 **3.** output folder → **4.** validation (pass/fail table) → **5.** mode
-(eID/image + PAdES) → **6.** page + position (actual page preview, click to
+(eID/image + PAdES level selector, default `b-lta`) → **6.** page + position (actual page preview, click to
 place) → **7.** launch → **8.** per-document summary.
 
 ---
@@ -132,9 +174,10 @@ Headless `unittest` suite (no card, no tkinter):
 | File | Role |
 |---|---|
 | `sign_pdfs_beid.py` | core + CLI entry point (business logic, importable without tkinter). |
+| `trust.py` | EU trusted-list (LOTL) trust provider: anchors for LTV, with local cache. |
 | `gui.py` | CustomTkinter interface (façade over the core). |
 | `gui_main.py` | entry point of the windowed binary (opens the GUI). |
-| `test_sign_pdfs_beid.py` | `unittest` test suite. |
+| `test_sign_pdfs_beid.py`, `test_trust.py` | `unittest` test suites. |
 | `signApp.spec` | PyInstaller recipe (two binaries). |
 | `build_*.sh` / `build_windows.bat` | build scripts. |
 | `.github/workflows/build.yml` | CI: Windows + Linux binaries as artifacts. |

@@ -104,6 +104,12 @@ These components are loaded dynamically and **cannot** be packaged:
   - macOS: `/usr/local/lib/libbeidpkcs11.dylib`
   - Install it from <https://eid.belgium.be>. Override the path via `--lib`.
   - Also requires a **reader + inserted eID card** + the PC/SC service.
+- **Network endpoints** — PAdES levels ≥ `b-t` (the default is `b-lta`) reach
+  out at signing time to the **RFC 3161 TSA** (`--timestamp-url`, default
+  DigiCert free TSA), the **EU trusted list** (LOTL, cached locally 24 h) and
+  the CAs' **OCSP/CRL** endpoints. Offline machines can only sign at
+  `--pades-level b-b` (or stamp images); on failure the app names the
+  unreachable endpoint and **never silently downgrades the level**.
 The GUI's **page preview** (step 6) is rendered by **pypdfium2** (PDFium engine
 **bundled** in the executable): nothing to install, on any OS.
 `poppler` (`pdftoppm`) is now only an **optional fallback** used only if it is
@@ -148,5 +154,27 @@ The **eID mode** (cryptographic signature via the card) requires a reader + an
 eID card + the middleware + a PIN entry per document: it can only be validated
 on a real, equipped machine. Packaging is verified up to the loading of the
 PKCS#11 library; the actual signature must be the subject of an **acceptance
-test on real Windows** (sign a PDF, verify the signature in Adobe Reader /
-pyHanko) before distribution.
+test on real hardware** before distribution:
+
+1. Sign a PDF with the defaults (`--mode beid`, i.e. PAdES **B-LTA** with
+   timestamping, embedded revocation info and the archival timestamp).
+2. Check the app's own summary line reports the requested level
+   (e.g. `PAdES-B-LTA, LTV ok`) — the post-signing self-verification fails
+   the document on any mismatch.
+3. Open the PDF in **Adobe Acrobat Reader**: the signature panel must show
+   the signature as valid **and "LTV enabled"**.
+4. Cross-check with the pyHanko CLI:
+   `pyhanko sign validate --pretty-print --ltv-profile pades-lta <signed.pdf>`
+   must report the expected level and a sound timestamp chain.
+
+Reminder: with the default **free TSA** the timestamps are technically valid
+but **not qualified**; for eIDAS-qualified preservation, run the acceptance
+test against a **qualified TSA** (`--timestamp-url`).
+
+### Ongoing maintenance for B-LTA archives (follow-up)
+
+A B-LTA document's archival timestamp chain must be **renewed before the
+last timestamp's certificate expires** (typically every few years). This
+repository does not yet ship an `ltaupdate`-style maintenance command to
+re-timestamp existing archives — planned follow-up; until then, renew with
+the pyHanko CLI (`pyhanko sign ltaupdate --timestamp-url … <file>`).

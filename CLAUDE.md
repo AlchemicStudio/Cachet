@@ -10,7 +10,9 @@ wraps the same logic as the headless CLI.
 
 - **`beid` mode** — cryptographic eID signature (pyHanko over the eID PKCS#11
   middleware), with a visible **vignette** (cardholder photo + "Signed by:" /
-  name / date) bottom-right of the last page. This is the original behaviour.
+  name / date) bottom-right of the last page. Signatures are **PAdES,
+  default level B-LTA** (timestamp + embedded revocation info + archival
+  timestamp chain), selectable via `--pades-level`; levels ≥ b-t need network.
 - **`image` mode** — stamps a user-supplied image onto a chosen page at a chosen
   position. See the design note below: **image mode does NOT use the card** and
   is not a cryptographic signature; it is the alternative to `beid`.
@@ -26,18 +28,24 @@ Code comments and CLI/GUI text are in English.
 - `gui.py` — CustomTkinter GUI. Imported **only** when `--gui` is passed
   (lazy), so the CLI/core/tests never require a display. It is a thin façade
   over the core; all non-widget logic it needs is imported from the core.
-- `test_sign_pdfs_beid.py` — headless `unittest` suite (no card, no tkinter).
+- `trust.py` — EU trusted-list (LOTL, ETSI TS 119 612) trust provider for LTV:
+  LOTL → Belgian list → granted CA/QC-for-eSignatures certs as
+  `ValidationContext` anchors; JSON cache under `platformdirs` (24 h TTL,
+  `--refresh-trust-list`); raises actionable `TrustListError` offline.
+  Import-safe without tkinter; network injectable (`fetcher=`) for tests.
+- `test_sign_pdfs_beid.py`, `test_trust.py` — headless `unittest` suites
+  (no card, no tkinter, no network).
 - `pdfs/` (`../pdfs`), `signes/` (`../signes`) — sample inputs / output dir.
 - `venv/` — Python 3.14 virtualenv.
 
 ## Commands
 
 ```bash
-# eID signing (vignette), new flat flags:
-./venv/bin/python sign_pdfs_beid.py --input ../pdfs --output ../signes --mode beid --pades
+# eID signing (vignette), new flat flags — PAdES B-LTA by default:
+./venv/bin/python sign_pdfs_beid.py --input ../pdfs --output ../signes --mode beid
 
-# eID signing, legacy positional form (still supported): inputs… then output dir
-./venv/bin/python sign_pdfs_beid.py ../pdfs ../signes --pades
+# eID signing, offline basic level; legacy positional form (still supported)
+./venv/bin/python sign_pdfs_beid.py ../pdfs ../signes --pades-level b-b
 
 # image stamp (no card), with template validation:
 ./venv/bin/python sign_pdfs_beid.py --mode image \
@@ -51,7 +59,7 @@ Code comments and CLI/GUI text are in English.
 ./venv/bin/python -m unittest -v
 
 # Syntax check everything:
-./venv/bin/python -m py_compile sign_pdfs_beid.py gui.py test_sign_pdfs_beid.py
+./venv/bin/python -m py_compile sign_pdfs_beid.py gui.py trust.py test_sign_pdfs_beid.py test_trust.py
 ```
 
 ### CLI flags
@@ -66,7 +74,14 @@ Code comments and CLI/GUI text are in English.
 | `--image-path <img>` | image to stamp (**required** for `--mode image`). |
 | `--page <N>` | target page, **1-based**. Image: insertion page. beID: vignette page (with `--x/--y`). |
 | `--x <pt> --y <pt>` | lower-left position, points from the page's bottom-left. Image: image corner. beID: vignette corner — **omit both → default bottom-right of last page**. |
-| `--pades` / `--lib` / `--field` | eID options (as before): PAdES subfilter, PKCS#11 lib path, field name. |
+| `--pades-level {b-b,b-t,b-lt,b-lta}` | PAdES baseline level, **default `b-lta`**. b-t+ needs a TSA; b-lt+ embeds OCSP/CRL (LTV) using EU-trusted-list anchors. Never silently downgraded on network failure. |
+| `--timestamp-url` / `--trust-list-url` | RFC 3161 TSA and EU LOTL overrides. Precedence: flag > env (`SIGNAPP_TSA_URL` / `SIGNAPP_LOTL_URL`) > default (DigiCert free TSA / official EU LOTL). Free TSA = technically valid but NOT qualified timestamps. |
+| `--digest {sha256,sha384,sha512}` | digest, pinned as `md_algorithm` (default sha256). |
+| `--no-verify` | skip post-signing self-verification (levels ≥ b-t); also skips the trusted-list fetch at b-t. |
+| `--refresh-trust-list` | bypass the 24 h LOTL cache. |
+| `--pades` | deprecated no-op alias (warns); PAdES is the default now. |
+| `--legacy-cms` | deprecated; old `adbe.pkcs7.detached` path, only combinable with level b-b. |
+| `--lib` / `--field` | eID options (as before): PKCS#11 lib path, field name. |
 
 Backward compatibility: `--input`/`--output` take precedence; if absent, the
 legacy positional form `inputs… output_dir` is used. `resolve_config()` does
@@ -78,11 +93,25 @@ without `--image-path`). Both are pure and unit-tested.
 Both the CLI (`main`) and the GUI call `process_batch(cfg: RunConfig, on_progress=…)`:
 1. If `cfg.template` is set, read its per-page dimensions once.
 2. For `beid` mode, open **one** PKCS#11 session, build `BEIDSigner`, read the
-   identity once (no PIN).
+   identity once (no PIN), and build the network material once via
+   `build_signing_material(cfg)` → `SigningMaterial` (an `HTTPTimeStamper`
+   for levels ≥ b-t; EU-trusted-list anchors + a fetching `ValidationContext`
+   for b-lt/b-lta — anchors are passed as `extra_trust_roots` because pyHanko
+   validates the TSA chain against the same context). A `TrustListError`
+   here fails the whole batch — the level is NEVER silently downgraded.
 3. Per input: validate against the template (if any) → reject+report on failure;
    else `sign_one()` (beid) or `insert_image_one()` (image). Returns a
    `DocResult` per file (`ok`, `detail`). `on_progress` fires per document so
    the GUI can stream rows into its summary table.
+4. beid + levels ≥ b-t (unless `--no-verify`): `verify_signed_pdf()` re-opens
+   the output, validates it (pyHanko validation API + EU anchors) and detects
+   the **achieved** level structurally (timestamp → b-t, DSS revinfo → b-lt,
+   doc-timestamp → b-lta); the result lands in `DocResult.detail`
+   (e.g. `PAdES-B-LTA, LTV ok`); `SelfVerificationError` ⇒ document FAILED.
+
+The level → `PdfSignatureMetadata` mapping is the pure
+`signature_meta_kwargs(level, digest, legacy_cms=…, validation_context=…)`
+(unit-tested for all four levels + legacy CMS).
 
 The **same** image/vignette + page + (x, y) is applied to every document —
 validation guarantees the files are geometrically identical, so one placement
@@ -130,7 +159,8 @@ reused by the GUI canvas.
 
 `SignApp` (a `ctk.CTk`) lays the required steps top-to-bottom in a scrollable
 frame: (1) template, (2) files, (3) output, (4) **Validate** → pass/fail table,
-(5) mode (beid/image + PAdES), (6) **page + position** — shown for **both** modes
+(5) mode (beid/image + **PAdES level selector**, default `b-lta`, + RRN privacy
+note), (6) **page + position** — shown for **both** modes
 (image mode also reveals the image picker), (7) **Launch** (runs `process_batch`
 on a worker thread), (8) summary table.
 
@@ -187,7 +217,9 @@ national register number is embedded in every signature — mind PDF distributio
 
 - **beid mode**: eID middleware (`libbeidpkcs11.so`), reader + inserted card,
   `pcscd` running. Prompts for the **PIN once per document**, so a full eID run
-  needs hardware + a human and cannot be exercised headlessly.
+  needs hardware + a human and cannot be exercised headlessly. Levels ≥ b-t
+  (default b-lta) additionally need **network**: TSA, EU trusted list
+  (cached 24 h) and OCSP/CRL endpoints; `--pades-level b-b` is offline.
 - **image mode**: nothing special — pure PDF stamping, fully testable headless.
 - **GUI**: `customtkinter` (pip) **and** a Python with `tkinter` + a display.
   The step-6 page preview is rendered by **pypdfium2** (bundled PDFium, no
@@ -209,6 +241,14 @@ works here; recreating the venv requires redoing that (or the apt install).
   (no card). The `unittest` suite builds synthetic PDFs (`make_pdf`) to assert
   page-count / dimension validation, image insertion, placement math, and arg
   resolution.
+- **PAdES levels & self-verification**: `SelfVerification` signs real PDFs
+  *offline* with `SimpleSigner` + pyHanko's `DummyTimeStamper` (RSA-only) and
+  a pre-loaded CRL, then asserts `verify_signed_pdf()` detects B-T/B-LT/B-LTA
+  and fails on mismatch. Do NOT fake the eID hardware path into passing —
+  real-card B-LTA stays the manual acceptance test in BUILD.md.
+- **trust.py**: `test_trust.py` covers LOTL parsing, cert filtering, cache,
+  TTL, refresh and offline errors with the network mocked (`fetcher=`); a
+  live run against the real LOTL takes ~1 s if you need to sanity-check.
 - **GUI**: instantiate `gui.SignApp(args)`, drive its methods, call
   `app.update()`, and screenshot the window by id with ImageMagick
   (`import -window <hex winfo_id> shot.png`) on `DISPLAY=:0` — this catches real
