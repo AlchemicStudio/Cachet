@@ -53,7 +53,7 @@ class SignApp(ctk.CTk):
         self.valid_paths: list[Path] = []
         self.output_dir: Path | None = None
         self.mode_var = ctk.StringVar(value="beid")
-        self.pades_var = ctk.BooleanVar(value=False)
+        self.pades_level_var = ctk.StringVar(value="b-lta")  # PAdES level (beid mode)
         self.image_path: Path | None = None
         self.cur_page = 0                         # 0-based, for the preview
         self.place_page: int | None = None        # 1-based, chosen position
@@ -107,7 +107,9 @@ class SignApp(ctk.CTk):
                            value="beid", command=self._refresh_placement_section).pack(side="left", padx=(0, 16))
         ctk.CTkRadioButton(row, text="Image insertion", variable=self.mode_var,
                            value="image", command=self._refresh_placement_section).pack(side="left")
-        ctk.CTkCheckBox(row, text="PAdES", variable=self.pades_var).pack(side="left", padx=16)
+        ctk.CTkLabel(row, text="PAdES level:").pack(side="left", padx=(16, 4))
+        ctk.CTkOptionMenu(row, variable=self.pades_level_var,
+                          values=list(core.PADES_LEVELS), width=110).pack(side="left")
 
         # 6. page + position (BOTH modes; the image choice appears only in image mode)
         self.image_section = ctk.CTkFrame(root)
@@ -343,7 +345,7 @@ class SignApp(ctk.CTk):
             output=self.output_dir,
             mode=self.mode_var.get(),
             template=self.template_path,
-            pades=self.pades_var.get(),
+            pades_level=self.pades_level_var.get(),
             lib=self.default_lib,
             image_path=self.image_path,
             page=self.place_page,

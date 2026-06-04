@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 from PIL import Image
@@ -170,16 +171,19 @@ class BatchBeidWiring(TmpCase):
 
     def _run(self, cfg):
         calls = []
-        saved = (core.open_eid_session, core.BEIDSigner, core.read_card_identity, core.sign_one)
+        saved = (core.open_eid_session, core.BEIDSigner, core.read_card_identity,
+                 core.sign_one, core.build_signing_material)
         core.open_eid_session = lambda *a, **k: object()
         core.BEIDSigner = lambda *a, **k: object()
         core.read_card_identity = lambda *a, **k: core.CardIdentity("X Y", None)
         core.sign_one = lambda *a, **k: calls.append((a, k))
+        # No network in tests: empty signing material regardless of level.
+        core.build_signing_material = lambda cfg: core.SigningMaterial()
         try:
             results = core.process_batch(cfg)
         finally:
-            (core.open_eid_session, core.BEIDSigner,
-             core.read_card_identity, core.sign_one) = saved
+            (core.open_eid_session, core.BEIDSigner, core.read_card_identity,
+             core.sign_one, core.build_signing_material) = saved
         return calls, results
 
     def test_placement_passes_page_index_and_pos(self):
@@ -270,7 +274,9 @@ class _Args:
     def __init__(self, **kw):
         defaults = dict(inputs=[], input=None, output=None, template=None, mode="beid",
                         image_path=None, page=1, x=0.0, y=0.0, lib=None, field="Signature",
-                        pades=False, gui=False)
+                        pades=False, gui=False, pades_level=None, legacy_cms=False,
+                        timestamp_url=None, trust_list_url=None, digest="sha256",
+                        verify=True, refresh_trust_list=False)
         defaults.update(kw)
         self.__dict__.update(defaults)
 
@@ -312,6 +318,165 @@ class ArgResolution(TmpCase):
         with self.assertRaises(ValueError):
             core.resolve_config(_Args(input=[str(self.a)], output=str(self.tmp),
                                       template=str(self.tmp / "nope.pdf")))
+
+
+class LevelMapping(unittest.TestCase):
+    """Pure mapping pades_level -> PdfSignatureMetadata kwargs (R3-R6)."""
+
+    def test_b_b_basic_pades_only(self):
+        kw = core.signature_meta_kwargs("b-b", "sha256")
+        self.assertEqual(kw, {"md_algorithm": "sha256",
+                              "subfilter": core.SigSeedSubFilter.PADES})
+
+    def test_b_t_same_metadata_timestamper_is_separate(self):
+        # The RFC 3161 timestamper rides on PdfSigner, not on the metadata.
+        kw = core.signature_meta_kwargs("b-t", "sha256")
+        self.assertEqual(kw, {"md_algorithm": "sha256",
+                              "subfilter": core.SigSeedSubFilter.PADES})
+        self.assertTrue(core.level_needs_timestamp("b-t"))
+        self.assertFalse(core.level_needs_ltv("b-t"))
+
+    def test_b_lt_embeds_validation_info(self):
+        sentinel = object()
+        kw = core.signature_meta_kwargs("b-lt", "sha256", validation_context=sentinel)
+        self.assertIs(kw["validation_context"], sentinel)
+        self.assertTrue(kw["embed_validation_info"])
+        self.assertNotIn("use_pades_lta", kw)
+
+    def test_b_lta_adds_archival_timestamp(self):
+        sentinel = object()
+        kw = core.signature_meta_kwargs("b-lta", "sha384", validation_context=sentinel)
+        self.assertEqual(kw["md_algorithm"], "sha384")  # --digest is pinned
+        self.assertTrue(kw["embed_validation_info"])
+        self.assertTrue(kw["use_pades_lta"])
+
+    def test_legacy_cms_keeps_old_subfilter(self):
+        kw = core.signature_meta_kwargs("b-b", "sha256", legacy_cms=True)
+        self.assertEqual(kw, {"md_algorithm": "sha256",
+                              "subfilter": core.SigSeedSubFilter.ADOBE_PKCS7_DETACHED})
+
+    def test_unknown_level_rejected(self):
+        with self.assertRaises(ValueError):
+            core.signature_meta_kwargs("b-x", "sha256")
+
+    def test_timestamp_and_ltv_thresholds(self):
+        self.assertFalse(core.level_needs_timestamp("b-b"))
+        self.assertEqual([core.level_needs_timestamp(l) for l in ("b-t", "b-lt", "b-lta")],
+                         [True, True, True])
+        self.assertEqual([core.level_needs_ltv(l) for l in core.PADES_LEVELS],
+                         [False, False, True, True])
+
+    def test_level_labels(self):
+        self.assertEqual(core.signature_level_label("b-lta"), "PAdES-B-LTA")
+        self.assertIn("adbe.pkcs7.detached", core.signature_level_label("b-b", True))
+
+
+class NewFlagParsing(TmpCase):
+    """CLI parsing of the PAdES-level flags through the real arg parser."""
+
+    def setUp(self):
+        super().setUp()
+        self.a = make_pdf(self.p("a.pdf"), [(595, 842)])
+
+    def parse(self, *extra):
+        argv = ["--input", str(self.a), "--output", str(self.tmp), *extra]
+        return core.resolve_config(core.build_arg_parser().parse_args(argv))
+
+    def test_default_level_is_b_lta(self):
+        cfg = self.parse()
+        self.assertEqual(cfg.pades_level, "b-lta")
+        self.assertEqual(cfg.digest, "sha256")
+        self.assertTrue(cfg.verify)
+        self.assertFalse(cfg.legacy_cms)
+        self.assertFalse(cfg.refresh_trust_list)
+        self.assertIsNone(cfg.timestamp_url)
+
+    def test_explicit_level(self):
+        self.assertEqual(self.parse("--pades-level", "b-t").pades_level, "b-t")
+
+    def test_deprecated_pades_warns_and_is_noop(self):
+        with self.assertWarns(FutureWarning):
+            cfg = self.parse("--pades")
+        self.assertEqual(cfg.pades_level, "b-lta")  # no effect on the level
+
+    def test_legacy_cms_alone_maps_to_b_b(self):
+        with self.assertWarns(FutureWarning):
+            cfg = self.parse("--legacy-cms")
+        self.assertTrue(cfg.legacy_cms)
+        self.assertEqual(cfg.pades_level, "b-b")
+
+    def test_legacy_cms_allows_explicit_b_b(self):
+        with self.assertWarns(FutureWarning):
+            cfg = self.parse("--legacy-cms", "--pades-level", "b-b")
+        self.assertTrue(cfg.legacy_cms)
+
+    def test_legacy_cms_excludes_higher_levels(self):
+        for level in ("b-t", "b-lt", "b-lta"):
+            with self.assertRaises(ValueError), warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                self.parse("--legacy-cms", "--pades-level", level)
+
+    def test_digest_flag(self):
+        self.assertEqual(self.parse("--digest", "sha512").digest, "sha512")
+
+    def test_no_verify_flag(self):
+        self.assertFalse(self.parse("--no-verify").verify)
+
+    def test_refresh_trust_list_flag(self):
+        self.assertTrue(self.parse("--refresh-trust-list").refresh_trust_list)
+
+    def test_urls_flow_into_config(self):
+        cfg = self.parse("--timestamp-url", "http://tsa.example",
+                         "--trust-list-url", "https://lotl.example/x.xml")
+        self.assertEqual(cfg.timestamp_url, "http://tsa.example")
+        self.assertEqual(cfg.trust_list_url, "https://lotl.example/x.xml")
+
+    def test_tsa_url_precedence_flag_env_default(self):
+        from unittest import mock
+        with mock.patch.dict("os.environ", {core.ENV_TSA_URL: "http://env.example"}):
+            self.assertEqual(core.resolve_tsa_url("http://flag.example"),
+                             "http://flag.example")
+            self.assertEqual(core.resolve_tsa_url(None), "http://env.example")
+        with mock.patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop(core.ENV_TSA_URL, None)
+            self.assertEqual(core.resolve_tsa_url(None), core.DEFAULT_TSA_URL)
+
+
+class SigningMaterialWiring(unittest.TestCase):
+    """build_signing_material: timestamper/context per level (offline-safe)."""
+
+    def _cfg(self, **kw):
+        kw.setdefault("inputs", [Path("x.pdf")])
+        kw.setdefault("output", Path("out"))
+        return core.RunConfig(**kw)
+
+    def test_image_mode_and_b_b_and_legacy_build_nothing(self):
+        for cfg in (self._cfg(mode="image", pades_level="b-lta"),
+                    self._cfg(pades_level="b-b"),
+                    self._cfg(pades_level="b-b", legacy_cms=True)):
+            material = core.build_signing_material(cfg)
+            self.assertIsNone(material.timestamper)
+            self.assertIsNone(material.validation_context)
+
+    def test_b_t_attaches_http_timestamper_only(self):
+        material = core.build_signing_material(
+            self._cfg(pades_level="b-t", timestamp_url="http://tsa.example"))
+        self.assertIsInstance(material.timestamper, core.timestamps.HTTPTimeStamper)
+        self.assertEqual(material.tsa_url, "http://tsa.example")
+        self.assertIsNone(material.validation_context)  # no LTV below b-lt
+
+    def test_b_lta_builds_fetching_context_from_trust_anchors(self):
+        import trust
+        from unittest import mock
+        with mock.patch.object(trust, "get_trust_anchors", return_value=[]) as got:
+            material = core.build_signing_material(
+                self._cfg(pades_level="b-lta", trust_list_url="https://l.example",
+                          refresh_trust_list=True))
+        got.assert_called_once_with("https://l.example", refresh=True)
+        self.assertIsInstance(material.timestamper, core.timestamps.HTTPTimeStamper)
+        self.assertIsNotNone(material.validation_context)
+        self.assertEqual(material.trust_anchors, [])
 
 
 class GuiImageEndToEnd(unittest.TestCase):

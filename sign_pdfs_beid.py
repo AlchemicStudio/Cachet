@@ -10,7 +10,7 @@ Prerequisites:
 Usage:
     python sign_pdfs_beid.py ./entree ./signes
     python sign_pdfs_beid.py ./entree ./signes --lib /usr/lib/libbeidpkcs11.so
-    python sign_pdfs_beid.py doc1.pdf doc2.pdf ./signes --pades
+    python sign_pdfs_beid.py doc1.pdf doc2.pdf ./signes --pades-level b-t
 
 Important:
     - We use the SIGNATURE (non-repudiation) certificate, legally equivalent
@@ -32,8 +32,10 @@ import platform
 import subprocess
 import sys
 import tempfile
+import warnings
 from pathlib import Path
 
+import requests
 import pkcs11
 from pkcs11 import Attribute, ObjectClass
 from pkcs11.exceptions import PKCS11Error
@@ -50,9 +52,10 @@ from pyhanko.pdf_utils.layout import (
     Margins,
     SimpleBoxLayoutRule,
 )
-from pyhanko.sign import PdfSignatureMetadata, signers
+from pyhanko.sign import PdfSignatureMetadata, signers, timestamps
 from pyhanko.sign.fields import SigFieldSpec, SigSeedSubFilter
 from pyhanko.stamp import StaticStampStyle, TextStampStyle
+from pyhanko_certvalidator import ValidationContext
 
 # Since pyHanko >= 0.22, Belgian eID support lives in the separate plugin.
 # On a very old install (< 0.22), replace with:
@@ -324,18 +327,101 @@ def collect_pdfs(inputs: list[str]) -> list[Path]:
     return pdfs
 
 
+# --------------------------------------------------------------------------
+# PAdES baseline levels (ETSI EN 319 142-1)
+# --------------------------------------------------------------------------
+
+PADES_LEVELS = ("b-b", "b-t", "b-lt", "b-lta")
+DIGEST_CHOICES = ("sha256", "sha384", "sha512")
+# Free public RFC 3161 TSA. Technically valid for B-T/B-LTA but NOT a
+# *qualified* timestamp; point --timestamp-url at a qualified TSA for
+# eIDAS-grade long-term preservation (see README).
+DEFAULT_TSA_URL = "http://timestamp.digicert.com"
+ENV_TSA_URL = "SIGNAPP_TSA_URL"
+
+
+def resolve_tsa_url(explicit: str | None = None) -> str:
+    """TSA URL precedence: --timestamp-url flag > SIGNAPP_TSA_URL > default."""
+    return explicit or os.environ.get(ENV_TSA_URL) or DEFAULT_TSA_URL
+
+
+def level_needs_timestamp(pades_level: str) -> bool:
+    """Levels >= b-t require an RFC 3161 timestamp token."""
+    return pades_level in ("b-t", "b-lt", "b-lta")
+
+
+def level_needs_ltv(pades_level: str) -> bool:
+    """Levels >= b-lt embed revocation info (OCSP/CRL) into the DSS."""
+    return pades_level in ("b-lt", "b-lta")
+
+
+def signature_level_label(pades_level: str, legacy_cms: bool = False) -> str:
+    """Human-readable label of the signature strength, for summaries."""
+    if legacy_cms:
+        return "legacy CMS (adbe.pkcs7.detached)"
+    return f"PAdES-{pades_level.upper()}"
+
+
+def signature_meta_kwargs(
+    pades_level: str,
+    digest: str = "sha256",
+    *,
+    legacy_cms: bool = False,
+    validation_context=None,
+) -> dict:
+    """Map a PAdES level to ``PdfSignatureMetadata`` keyword arguments (pure).
+
+    b-b   = basic PAdES signature;
+    b-t   = + trusted timestamp (the timestamper itself is attached to the
+            ``PdfSigner``, not to the metadata);
+    b-lt  = + revocation info (OCSP/CRL) embedded into the DSS at signing
+            time, which needs a fetching ``ValidationContext``;
+    b-lta = + archival DocumentTimeStamp chain.
+
+    ``legacy_cms`` selects the historical non-PAdES adbe.pkcs7.detached
+    subfilter instead (kept reachable only through the deprecated
+    --legacy-cms flag).
+    """
+    if legacy_cms:
+        return {
+            "md_algorithm": digest,
+            "subfilter": SigSeedSubFilter.ADOBE_PKCS7_DETACHED,
+        }
+    if pades_level not in PADES_LEVELS:
+        raise ValueError(
+            f"Unknown PAdES level: {pades_level!r} (expected {'|'.join(PADES_LEVELS)})."
+        )
+    kwargs: dict = {"md_algorithm": digest, "subfilter": SigSeedSubFilter.PADES}
+    if level_needs_ltv(pades_level):
+        kwargs["embed_validation_info"] = True
+        kwargs["validation_context"] = validation_context
+    if pades_level == "b-lta":
+        kwargs["use_pades_lta"] = True
+    return kwargs
+
+
 def sign_one(
     signer: BEIDSigner,
     src: Path,
     dst: Path,
     field_name: str,
-    use_pades: bool,
+    pades_level: str,
     identity: CardIdentity,
     page_index: int | None = None,
     pos: tuple[float, float] | None = None,
+    *,
+    digest: str = "sha256",
+    legacy_cms: bool = False,
+    timestamper: timestamps.TimeStamper | None = None,
+    validation_context: ValidationContext | None = None,
 ) -> None:
     """Sign a PDF (incremental signature) and stamp the visible vignette onto
     it (photo + "Signed by ...").
+
+    ``pades_level`` selects the PAdES baseline level (see
+    ``signature_meta_kwargs``); ``timestamper`` must be provided for levels
+    >= b-t and ``validation_context`` for b-lt/b-lta (both are built once per
+    batch by ``build_signing_material``).
 
     By default (``pos`` None) the vignette is anchored bottom-right of the LAST
     page (historical behavior). If ``pos`` is provided, it is placed on page
@@ -344,8 +430,11 @@ def sign_one(
     """
     meta = PdfSignatureMetadata(
         field_name=field_name,
-        subfilter=(
-            SigSeedSubFilter.PADES if use_pades else SigSeedSubFilter.ADOBE_PKCS7_DETACHED
+        **signature_meta_kwargs(
+            pades_level,
+            digest,
+            legacy_cms=legacy_cms,
+            validation_context=validation_context,
         ),
     )
     with src.open("rb") as inf:
@@ -367,7 +456,11 @@ def sign_one(
             style = build_stamp_style(identity, vw, vh)
         field_spec = SigFieldSpec(sig_field_name=field_name, on_page=on_page, box=box)
         pdf_signer = signers.PdfSigner(
-            meta, signer=signer, stamp_style=style, new_field_spec=field_spec
+            meta,
+            signer=signer,
+            timestamper=timestamper,
+            stamp_style=style,
+            new_field_spec=field_spec,
         )
         out = pdf_signer.sign_pdf(writer)
     dst.write_bytes(out.getbuffer())
@@ -613,7 +706,7 @@ class RunConfig:
     output: Path
     mode: str = "beid"               # "beid" (eID card + vignette) | "image"
     template: Path | None = None
-    pades: bool = False
+    pades_level: str = "b-lta"       # b-b | b-t | b-lt | b-lta (beid mode)
     field: str = "Signature"
     lib: str | None = None
     image_path: Path | None = None
@@ -623,6 +716,12 @@ class RunConfig:
     page: int | None = None
     x: float | None = None
     y: float | None = None
+    timestamp_url: str | None = None   # None -> SIGNAPP_TSA_URL env -> DigiCert
+    trust_list_url: str | None = None  # None -> SIGNAPP_LOTL_URL env -> EU LOTL
+    digest: str = "sha256"             # sha256 | sha384 | sha512
+    verify: bool = True                # post-signing self-verification (>= b-t)
+    legacy_cms: bool = False           # deprecated adbe.pkcs7.detached path
+    refresh_trust_list: bool = False   # bypass the trusted-list cache
 
 
 @dataclasses.dataclass
@@ -643,6 +742,20 @@ def validate_config(cfg: RunConfig) -> None:
         raise ValueError("Missing output folder (--output).")
     if cfg.mode not in ("beid", "image"):
         raise ValueError(f"Unknown mode: {cfg.mode!r} (expected beid|image).")
+    if cfg.mode == "beid":
+        if cfg.pades_level not in PADES_LEVELS:
+            raise ValueError(
+                f"Unknown PAdES level: {cfg.pades_level!r} "
+                f"(expected {'|'.join(PADES_LEVELS)})."
+            )
+        if cfg.digest not in DIGEST_CHOICES:
+            raise ValueError(
+                f"Unknown digest: {cfg.digest!r} (expected {'|'.join(DIGEST_CHOICES)})."
+            )
+        if cfg.legacy_cms and cfg.pades_level != "b-b":
+            raise ValueError(
+                "legacy_cms is incompatible with PAdES levels above b-b."
+            )
     if cfg.mode == "image":
         if not cfg.image_path:
             raise ValueError("--image-path is required in image mode.")
@@ -654,18 +767,74 @@ def validate_config(cfg: RunConfig) -> None:
         raise ValueError(f"Template not found: {cfg.template}")
 
 
+@dataclasses.dataclass
+class SigningMaterial:
+    """Network-bound signing collaborators, resolved once per batch."""
+
+    timestamper: timestamps.TimeStamper | None = None
+    validation_context: ValidationContext | None = None
+    trust_anchors: list | None = None
+    tsa_url: str | None = None
+
+
+def build_signing_material(cfg: RunConfig) -> SigningMaterial:
+    """Resolve the per-batch signing material for cfg's level (beid mode).
+
+    Levels >= b-t get an RFC 3161 ``HTTPTimeStamper`` (URL precedence:
+    flag > SIGNAPP_TSA_URL > DigiCert default). Levels b-lt/b-lta also get a
+    fetching ``ValidationContext`` whose trust roots are seeded with the EU
+    trusted-list anchors, so OCSP/CRL material can be gathered and embedded.
+
+    The anchors are passed as ``extra_trust_roots`` (i.e. *in addition to*
+    the system store) deliberately: when embedding validation info, pyHanko
+    validates the TSA's certificate chain against this same context
+    (``timestamper.validation_paths``), and the default free TSA does not
+    chain to the EU-trusted-list anchors. A trust_roots-only context would
+    therefore make every b-lt/b-lta signature fail.
+
+    Raises ``trust.TrustListError`` (actionable, names the endpoint) when the
+    trusted list is needed but unavailable — the level is NEVER silently
+    downgraded.
+    """
+    material = SigningMaterial()
+    if cfg.mode != "beid" or cfg.legacy_cms:
+        return material
+    if level_needs_timestamp(cfg.pades_level):
+        material.tsa_url = resolve_tsa_url(cfg.timestamp_url)
+        material.timestamper = timestamps.HTTPTimeStamper(url=material.tsa_url)
+    if level_needs_ltv(cfg.pades_level):
+        import trust  # lazy: only LTV levels need the trusted-list machinery
+
+        material.trust_anchors = trust.get_trust_anchors(
+            cfg.trust_list_url, refresh=cfg.refresh_trust_list
+        )
+        material.validation_context = ValidationContext(
+            extra_trust_roots=material.trust_anchors,
+            allow_fetching=True,
+        )
+    return material
+
+
 def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
     """Validate (if a template is provided) then process each file according to
     the mode. Returns one DocResult per input file. `on_progress` is called
-    after each document (useful for the GUI)."""
+    after each document (useful for the GUI).
+
+    In beid mode the PKCS#11 session, the RFC 3161 timestamper and the
+    LTV ValidationContext are built ONCE here and reused for every document.
+    """
     results: list[DocResult] = []
     template_dims = page_dimensions(cfg.template) if cfg.template else None
 
     signer = identity = None
+    material = SigningMaterial()
     if cfg.mode == "beid":
         session = open_eid_session(cfg.lib or default_pkcs11_lib())
         signer = BEIDSigner(session)
         identity = read_card_identity(session)
+        # May raise trust.TrustListError (clear + actionable): levels above
+        # b-b require their network material — NEVER downgrade silently.
+        material = build_signing_material(cfg)
 
     Path(cfg.output).mkdir(parents=True, exist_ok=True)
 
@@ -676,6 +845,7 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
     x = cfg.x if cfg.x is not None else 0.0
     y = cfg.y if cfg.y is not None else 0.0
 
+    label = signature_level_label(cfg.pades_level, cfg.legacy_cms)
     for src in cfg.inputs:
         src = Path(src)
         if template_dims is not None:
@@ -689,18 +859,35 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
         dst = unique_output_path(cfg.output, src.stem)  # never overwrites
         try:
             if cfg.mode == "beid":
+                sign_kwargs = dict(
+                    digest=cfg.digest,
+                    legacy_cms=cfg.legacy_cms,
+                    timestamper=material.timestamper,
+                    validation_context=material.validation_context,
+                )
                 if placement:
-                    sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades, identity,
-                             page_index=page - 1, pos=(x, y))
-                    detail = f"signed (eID) — vignette page {page} @ ({x:.0f}, {y:.0f})"
+                    sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades_level,
+                             identity, page_index=page - 1, pos=(x, y),
+                             **sign_kwargs)
+                    detail = (f"signed (eID) — vignette page {page} "
+                              f"@ ({x:.0f}, {y:.0f}) — {label}")
                 else:
-                    sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades, identity)
-                    detail = "signed (eID) — vignette"
-                detail += " (PAdES)" if cfg.pades else ""
+                    sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades_level,
+                             identity, **sign_kwargs)
+                    detail = f"signed (eID) — vignette — {label}"
             else:
                 insert_image_one(src, dst, cfg.image_path, page - 1, x, y)
                 detail = f"image inserted — page {page} @ ({x:.0f}, {y:.0f})"
             res = DocResult(src, dst, True, detail)
+        except (requests.RequestException, timestamps.TimestampRequestError) as exc:
+            # R10: name the endpoint, never downgrade the level silently.
+            endpoints = material.tsa_url or "network endpoint"
+            res = DocResult(
+                src, None, False,
+                f"failed — network error while signing at level {label}: {exc}. "
+                f"Check the TSA ({endpoints}) and OCSP/CRL reachability, or "
+                "use --pades-level b-b for offline signing.",
+            )
         except Exception as exc:  # noqa: BLE001 - continue the batch
             res = DocResult(src, None, False, f"failed — {exc}")
         results.append(res)
@@ -768,7 +955,48 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--field", default="Signature", help="Base name of the signature field (beid mode)."
     )
     parser.add_argument(
-        "--pades", action="store_true", help="PAdES signature (long-term archiving)."
+        "--pades-level", dest="pades_level", choices=PADES_LEVELS, default=None,
+        help="PAdES baseline level (beid mode): b-b = basic signature (offline); "
+             "b-t = + trusted RFC 3161 timestamp; b-lt = + embedded revocation "
+             "info (LTV); b-lta = + archival timestamp chain. Default: b-lta. "
+             "Levels above b-b need network access (TSA; plus the EU trusted "
+             "list and OCSP/CRL endpoints for b-lt/b-lta).",
+    )
+    parser.add_argument(
+        "--pades", action="store_true",
+        help="(deprecated, no-op) PAdES is now the default; use --pades-level.",
+    )
+    parser.add_argument(
+        "--legacy-cms", dest="legacy_cms", action="store_true",
+        help="(deprecated) Sign with the legacy non-PAdES CMS subfilter "
+             "(adbe.pkcs7.detached): no timestamp, no LTV. Incompatible with "
+             "--pades-level above b-b.",
+    )
+    parser.add_argument(
+        "--timestamp-url", dest="timestamp_url", default=None,
+        help="RFC 3161 TSA URL for levels >= b-t. Precedence: this flag > "
+             f"{ENV_TSA_URL} env var > default {DEFAULT_TSA_URL}. The default "
+             "free TSA yields technically valid timestamps but NOT qualified "
+             "ones; point this at a qualified TSA for eIDAS-grade "
+             "long-term preservation.",
+    )
+    parser.add_argument(
+        "--trust-list-url", dest="trust_list_url", default=None,
+        help="EU List of Trusted Lists (LOTL) URL seeding the LTV trust "
+             "anchors for b-lt/b-lta. Precedence: this flag > SIGNAPP_LOTL_URL "
+             "env var > https://ec.europa.eu/tools/lotl/eu-lotl.xml.",
+    )
+    parser.add_argument(
+        "--refresh-trust-list", dest="refresh_trust_list", action="store_true",
+        help="Force re-download of the EU trusted list, ignoring the local cache.",
+    )
+    parser.add_argument(
+        "--digest", choices=DIGEST_CHOICES, default="sha256",
+        help="Signature digest algorithm (default: sha256).",
+    )
+    parser.add_argument(
+        "--no-verify", dest="verify", action="store_false",
+        help="Skip the post-signing self-verification (levels >= b-t).",
     )
     return parser
 
@@ -784,18 +1012,50 @@ def resolve_config(args) -> RunConfig:
         else:
             *raw_inputs, output = args.inputs
 
+    # FutureWarning (not DeprecationWarning) so end users see it without -W.
+    if getattr(args, "pades", False):
+        warnings.warn(
+            "--pades is deprecated and has no effect: PAdES is now the "
+            "default (b-lta). Use --pades-level to choose the level.",
+            FutureWarning, stacklevel=2,
+        )
+    legacy_cms = bool(getattr(args, "legacy_cms", False))
+    explicit_level = getattr(args, "pades_level", None)
+    if legacy_cms:
+        warnings.warn(
+            "--legacy-cms is deprecated; it produces a non-PAdES "
+            "adbe.pkcs7.detached signature with no timestamp and no LTV.",
+            FutureWarning, stacklevel=2,
+        )
+        # Mutually exclusive with PAdES levels above b-b; alone it implies
+        # the b-b strength tier (no timestamp / LTV material is built).
+        if explicit_level not in (None, "b-b"):
+            raise ValueError(
+                f"--legacy-cms cannot be combined with --pades-level "
+                f"{explicit_level} (only b-b)."
+            )
+        pades_level = "b-b"
+    else:
+        pades_level = explicit_level or "b-lta"
+
     cfg = RunConfig(
         inputs=collect_pdfs([str(p) for p in raw_inputs]),
         output=Path(output) if output else None,
         mode=args.mode,
         template=Path(args.template) if args.template else None,
-        pades=args.pades,
+        pades_level=pades_level,
         field=args.field,
         lib=args.lib,
         image_path=Path(args.image_path) if args.image_path else None,
         page=args.page,
         x=args.x,
         y=args.y,
+        timestamp_url=getattr(args, "timestamp_url", None),
+        trust_list_url=getattr(args, "trust_list_url", None),
+        digest=getattr(args, "digest", "sha256"),
+        verify=getattr(args, "verify", True),
+        legacy_cms=legacy_cms,
+        refresh_trust_list=getattr(args, "refresh_trust_list", False),
     )
     validate_config(cfg)
     return cfg
@@ -837,6 +1097,14 @@ def main() -> int:
         where = (f"vignette page {cfg.page or 1} @ ({cfg.x:.0f}, {cfg.y:.0f})"
                  if placed else "vignette bottom-right, last page")
         print(f"Mode: eID — {where}. PKCS#11 lib: {lib_path}")
+        label = signature_level_label(cfg.pades_level, cfg.legacy_cms)
+        print(f"Signature level: {label} — digest {cfg.digest}")
+        if not cfg.legacy_cms and level_needs_timestamp(cfg.pades_level):
+            print(f"RFC 3161 TSA: {resolve_tsa_url(cfg.timestamp_url)}")
+        if not cfg.legacy_cms and level_needs_ltv(cfg.pades_level):
+            from trust import resolve_lotl_url
+
+            print(f"LTV trust anchors: EU trusted list ({resolve_lotl_url(cfg.trust_list_url)})")
         print(f"{len(cfg.inputs)} PDF(s). The PIN will be requested for each document.")
     else:
         print(
