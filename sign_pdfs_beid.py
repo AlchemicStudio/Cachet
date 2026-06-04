@@ -225,6 +225,60 @@ def read_card_identity(session) -> CardIdentity:
     return CardIdentity(name=name, photo=photo)
 
 
+def read_cert_identity(cert, display_name: str | None = None) -> CardIdentity:
+    """Identity for the vignette from a certificate subject (azure mode).
+
+    Mirrors ``read_card_identity()``'s shape with ``photo=None`` (the
+    text-only vignette layout already supports that). Name preference:
+    explicit ``display_name`` (e.g. Microsoft Graph) > given_name + surname
+    > common name.
+    """
+
+    def _first(value):
+        return value[0] if isinstance(value, list) else value
+
+    name = display_name
+    if not name:
+        subject = cert.subject.native
+        given, surname = _first(subject.get("given_name")), _first(subject.get("surname"))
+        if given and surname:
+            name = f"{given} {surname}"
+        else:
+            name = _first(subject.get("common_name"))
+    return CardIdentity(name=str(name or "Unknown signer"), photo=None)
+
+
+def load_trust_anchor_certs(path) -> list:
+    """Load trust-anchor certificates from a PEM/DER file or a directory.
+
+    Used for the internal-CA chain of azure mode (--azure-trust-anchors).
+    A directory is scanned for *.pem/*.crt/*.cer/*.der files; PEM files may
+    hold several certificates. Raises ValueError when nothing loads.
+    """
+    from asn1crypto import pem
+
+    p = Path(path)
+    if p.is_dir():
+        files = sorted(
+            f for f in p.iterdir()
+            if f.suffix.lower() in (".pem", ".crt", ".cer", ".der")
+        )
+    else:
+        files = [p]
+    certs: list = []
+    for f in files:
+        data = f.read_bytes()
+        if pem.detect(data):
+            for kind, _, der in pem.unarmor(data, multiple=True):
+                if kind == "CERTIFICATE":
+                    certs.append(x509.Certificate.load(der))
+        else:
+            certs.append(x509.Certificate.load(data))
+    if not certs:
+        raise ValueError(f"No certificate found in {path}")
+    return certs
+
+
 def _page_mediabox(writer, page_index: int) -> list[float]:
     """MediaBox of page `page_index` (0-based, -1 = last), with inheritance
     from the page tree."""
@@ -342,6 +396,21 @@ DIGEST_CHOICES = ("sha256", "sha384", "sha512")
 DEFAULT_TSA_URL = "http://timestamp.digicert.com"
 ENV_TSA_URL = "SIGNAPP_TSA_URL"
 
+# azure mode (Entra ID + Key Vault, personal AES). Flag > env > default.
+AZURE_AUTH_METHODS = ("interactive", "device-code", "default")
+ENV_AZURE_VAULT_URL = "SIGNAPP_AZURE_VAULT_URL"
+ENV_AZURE_KEY_NAME = "SIGNAPP_AZURE_KEY_NAME"
+ENV_AZURE_KEY_TEMPLATE = "SIGNAPP_AZURE_KEY_NAME_TEMPLATE"
+ENV_AZURE_CERT_NAME = "SIGNAPP_AZURE_CERT_NAME"
+ENV_AZURE_AUTH = "SIGNAPP_AZURE_AUTH"
+ENV_AZURE_TRUST_ANCHORS = "SIGNAPP_AZURE_TRUST_ANCHORS"
+
+
+def resolve_azure_auth(explicit: str | None = None) -> str:
+    """Auth method precedence: --azure-auth > SIGNAPP_AZURE_AUTH >
+    device-code (the headless-CLI default; the GUI passes interactive)."""
+    return explicit or os.environ.get(ENV_AZURE_AUTH) or "device-code"
+
 
 def resolve_tsa_url(explicit: str | None = None) -> str:
     """TSA URL precedence: --timestamp-url flag > SIGNAPP_TSA_URL > default."""
@@ -404,7 +473,7 @@ def signature_meta_kwargs(
 
 
 def sign_one(
-    signer: BEIDSigner,
+    signer: signers.Signer,
     src: Path,
     dst: Path,
     field_name: str,
@@ -418,8 +487,8 @@ def sign_one(
     timestamper: timestamps.TimeStamper | None = None,
     validation_context: ValidationContext | None = None,
 ) -> None:
-    """Sign a PDF (incremental signature) and stamp the visible vignette onto
-    it (photo + "Signed by ...").
+    """Sign a PDF (incremental signature) with any pyHanko ``Signer`` and
+    stamp the visible vignette onto it ("Signed by ..." + optional photo).
 
     ``pades_level`` selects the PAdES baseline level (see
     ``signature_meta_kwargs``); ``timestamper`` must be provided for levels
@@ -725,6 +794,15 @@ class RunConfig:
     verify: bool = True                # post-signing self-verification (>= b-t)
     legacy_cms: bool = False           # deprecated adbe.pkcs7.detached path
     refresh_trust_list: bool = False   # bypass the trusted-list cache
+    # azure mode (Entra ID + Key Vault). Trust anchors = INTERNAL CA chain,
+    # never the EU LOTL (that one is beid-only).
+    azure_vault_url: str | None = None
+    azure_key_name: str | None = None           # explicit override (flagged)
+    azure_key_name_template: str | None = None  # None -> "sig-{upn}"
+    azure_cert_name: str | None = None          # None -> same as key name
+    azure_auth: str | None = None               # None -> device-code (CLI)
+    azure_trust_anchors: Path | None = None     # PEM/DER file or directory
+    azure_use_graph: bool = False               # Graph /me displayName opt-in
 
 
 @dataclasses.dataclass
@@ -743,9 +821,9 @@ def validate_config(cfg: RunConfig) -> None:
         raise ValueError("No input PDF.")
     if cfg.output is None:
         raise ValueError("Missing output folder (--output).")
-    if cfg.mode not in ("beid", "image"):
-        raise ValueError(f"Unknown mode: {cfg.mode!r} (expected beid|image).")
-    if cfg.mode == "beid":
+    if cfg.mode not in ("beid", "image", "azure"):
+        raise ValueError(f"Unknown mode: {cfg.mode!r} (expected beid|image|azure).")
+    if cfg.mode in ("beid", "azure"):
         if cfg.pades_level not in PADES_LEVELS:
             raise ValueError(
                 f"Unknown PAdES level: {cfg.pades_level!r} "
@@ -758,6 +836,47 @@ def validate_config(cfg: RunConfig) -> None:
         if cfg.legacy_cms and cfg.pades_level != "b-b":
             raise ValueError(
                 "legacy_cms is incompatible with PAdES levels above b-b."
+            )
+    if cfg.mode == "azure":
+        if cfg.legacy_cms:
+            raise ValueError("--legacy-cms only applies to beid mode.")
+        if not cfg.azure_vault_url:
+            raise ValueError(
+                "azure mode needs the Key Vault URL: pass --azure-vault-url "
+                f"or set {ENV_AZURE_VAULT_URL}."
+            )
+        if cfg.azure_auth and cfg.azure_auth not in AZURE_AUTH_METHODS:
+            raise ValueError(
+                f"Unknown --azure-auth: {cfg.azure_auth!r} "
+                f"(expected {'|'.join(AZURE_AUTH_METHODS)})."
+            )
+        if cfg.azure_key_name_template:
+            try:  # fail early on bad placeholders, before any login
+                cfg.azure_key_name_template.format(upn="u", upn_local="u", oid="o")
+            except (KeyError, IndexError) as exc:
+                raise ValueError(
+                    f"Bad --azure-key-name-template "
+                    f"{cfg.azure_key_name_template!r}: unknown placeholder "
+                    f"{exc} (available: {{upn}}, {{upn_local}}, {{oid}})."
+                ) from None
+        # Internal-CA anchors: the spec requires them for b-lt/b-lta; they
+        # are equally needed to TRUST the user's chain during the >= b-t
+        # self-verification, so require them there too rather than letting
+        # every run fail at verification time (recorded design choice).
+        needs_anchors = level_needs_ltv(cfg.pades_level) or (
+            cfg.verify and level_needs_timestamp(cfg.pades_level)
+        )
+        if needs_anchors and not cfg.azure_trust_anchors:
+            raise ValueError(
+                "azure mode needs the internal CA chain for "
+                f"{cfg.pades_level} (LTV/verification): pass "
+                f"--azure-trust-anchors or set {ENV_AZURE_TRUST_ANCHORS} "
+                "(PEM/DER file or directory). The EU trusted list is NOT "
+                "used in azure mode."
+            )
+        if cfg.azure_trust_anchors and not Path(cfg.azure_trust_anchors).exists():
+            raise ValueError(
+                f"Trust anchors not found: {cfg.azure_trust_anchors}"
             )
     if cfg.mode == "image":
         if not cfg.image_path:
@@ -781,41 +900,48 @@ class SigningMaterial:
 
 
 def build_signing_material(cfg: RunConfig) -> SigningMaterial:
-    """Resolve the per-batch signing material for cfg's level (beid mode).
+    """Resolve the per-batch signing material for cfg's level (beid/azure).
 
     Levels >= b-t get an RFC 3161 ``HTTPTimeStamper`` (URL precedence:
     flag > SIGNAPP_TSA_URL > DigiCert default). Levels b-lt/b-lta also get a
-    fetching ``ValidationContext`` whose trust roots are seeded with the EU
-    trusted-list anchors, so OCSP/CRL material can be gathered and embedded.
+    fetching ``ValidationContext`` whose trust roots are seeded with the
+    mode's anchors, so OCSP/CRL material can be gathered and embedded.
 
-    The anchors are passed as ``extra_trust_roots`` (i.e. *in addition to*
-    the system store) deliberately: when embedding validation info, pyHanko
-    validates the TSA's certificate chain against this same context
-    (``timestamper.validation_paths``), and the default free TSA does not
-    chain to the EU-trusted-list anchors. A trust_roots-only context would
-    therefore make every b-lt/b-lta signature fail.
+    The trust source is MODE-DEPENDENT: beid uses the EU trusted list
+    (trust.py, LOTL); azure uses the organisation's internal CA chain from
+    --azure-trust-anchors — never the EU LOTL.
 
-    Raises ``trust.TrustListError`` (actionable, names the endpoint) when the
-    trusted list is needed but unavailable — the level is NEVER silently
-    downgraded.
+    Either way the anchors are passed as ``extra_trust_roots`` (i.e. *in
+    addition to* the system store) deliberately: when embedding validation
+    info, pyHanko validates the TSA's certificate chain against this same
+    context (``timestamper.validation_paths``), and the default free TSA
+    chains to a public root, not to the mode's anchors. A trust_roots-only
+    context would therefore make every b-lt/b-lta signature fail.
+
+    Raises ``trust.TrustListError`` / ``ValueError`` (actionable, names the
+    endpoint or file) when anchors are needed but unavailable — the level
+    is NEVER silently downgraded.
     """
     material = SigningMaterial()
-    if cfg.mode != "beid" or cfg.legacy_cms:
+    if cfg.mode not in ("beid", "azure") or cfg.legacy_cms:
         return material
     if level_needs_timestamp(cfg.pades_level):
         material.tsa_url = resolve_tsa_url(cfg.timestamp_url)
         material.timestamper = timestamps.HTTPTimeStamper(url=material.tsa_url)
     # Anchors are needed to *sign* at b-lt/b-lta (revinfo gathering) and to
-    # *verify* at any level >= b-t (the eID chain must be trusted, R8).
+    # *verify* at any level >= b-t (the signer chain must be trusted, R8/R9).
     need_anchors = level_needs_ltv(cfg.pades_level) or (
         cfg.verify and level_needs_timestamp(cfg.pades_level)
     )
     if need_anchors:
-        import trust  # lazy: only network-bound levels need the trusted list
+        if cfg.mode == "azure":
+            material.trust_anchors = load_trust_anchor_certs(cfg.azure_trust_anchors)
+        else:
+            import trust  # lazy: only network-bound levels need the trusted list
 
-        material.trust_anchors = trust.get_trust_anchors(
-            cfg.trust_list_url, refresh=cfg.refresh_trust_list
-        )
+            material.trust_anchors = trust.get_trust_anchors(
+                cfg.trust_list_url, refresh=cfg.refresh_trust_list
+            )
     if level_needs_ltv(cfg.pades_level):
         material.validation_context = ValidationContext(
             extra_trust_roots=material.trust_anchors,
@@ -911,6 +1037,7 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
     template_dims = page_dimensions(cfg.template) if cfg.template else None
 
     signer = identity = None
+    azure_user = None
     material = SigningMaterial()
     if cfg.mode == "beid":
         session = open_eid_session(cfg.lib or default_pkcs11_lib())
@@ -919,6 +1046,39 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
         # May raise trust.TrustListError (clear + actionable): levels above
         # b-b require their network material — NEVER downgrade silently.
         material = build_signing_material(cfg)
+    elif cfg.mode == "azure":
+        # Setup ONCE per batch (R6): one interactive Entra login, one
+        # key/cert resolution, one signer + timestamper + context. The SDK
+        # clients refresh tokens through the cached credential as needed,
+        # so long batches survive token expiry without re-prompting.
+        import azure_signer as _az
+
+        credential = _az.get_cached_credential(resolve_azure_auth(cfg.azure_auth))
+        azure_user = _az.acquire_user(credential)
+        key_name, cert_name, overridden = _az.resolve_key_names(
+            azure_user,
+            key_name=cfg.azure_key_name,
+            key_name_template=cfg.azure_key_name_template,
+            cert_name=cfg.azure_cert_name,
+        )
+        if overridden:
+            # Security rule (R4/R11): an explicit key override may sign with
+            # a key NOT derived from the signed-in user — make it visible.
+            print(
+                f"WARNING: --azure-key-name overrides the per-user key "
+                f"derivation: signing with {key_name!r} as requested, "
+                f"signed in as {azure_user.upn}. Key Vault access policy "
+                "remains the authorization gate.",
+                file=sys.stderr,
+            )
+        material = build_signing_material(cfg)
+        signer = _az.build_azure_signer(
+            cfg.azure_vault_url, credential, key_name, cert_name, cfg.digest,
+            other_certs=tuple(material.trust_anchors or ()),
+        )
+        display = (_az.fetch_graph_display_name(credential)
+                   if cfg.azure_use_graph else None)
+        identity = read_cert_identity(signer.signing_cert, display_name=display)
 
     Path(cfg.output).mkdir(parents=True, exist_ok=True)
 
@@ -930,6 +1090,9 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
     y = cfg.y if cfg.y is not None else 0.0
 
     label = signature_level_label(cfg.pades_level, cfg.legacy_cms)
+    mode_tag = "eID" if cfg.mode == "beid" else (
+        f"Azure, {azure_user.upn}" if azure_user else "Azure"
+    )
     for src in cfg.inputs:
         src = Path(src)
         if template_dims is not None:
@@ -942,7 +1105,7 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
                 continue
         dst = unique_output_path(cfg.output, src.stem)  # never overwrites
         try:
-            if cfg.mode == "beid":
+            if cfg.mode in ("beid", "azure"):
                 sign_kwargs = dict(
                     digest=cfg.digest,
                     legacy_cms=cfg.legacy_cms,
@@ -953,12 +1116,12 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
                     sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades_level,
                              identity, page_index=page - 1, pos=(x, y),
                              **sign_kwargs)
-                    prefix = (f"signed (eID) — vignette page {page} "
+                    prefix = (f"signed ({mode_tag}) — vignette page {page} "
                               f"@ ({x:.0f}, {y:.0f})")
                 else:
                     sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades_level,
                              identity, **sign_kwargs)
-                    prefix = "signed (eID) — vignette"
+                    prefix = f"signed ({mode_tag}) — vignette"
                 # R8: re-open + validate, report the *achieved* level. A
                 # mismatch raises SelfVerificationError -> document failed.
                 if (cfg.verify and not cfg.legacy_cms
@@ -1033,9 +1196,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default=None, help="Output folder.")
     parser.add_argument(
         "--mode",
-        choices=("beid", "image"),
+        choices=("beid", "image", "azure"),
         default="beid",
-        help="Mode: beid (eID card + vignette) or image (image insertion).",
+        help="Mode: beid (eID card + vignette), image (image insertion), or "
+             "azure (your personal certificate in Azure Key Vault via a "
+             "Microsoft Entra ID login — an advanced (AES), not qualified, "
+             "signature).",
     )
     parser.add_argument(
         "--image-path", dest="image_path", default=None,
@@ -1103,6 +1269,52 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Skip the post-signing self-verification (levels >= b-t). "
              "Also skips the EU trusted-list fetch at level b-t.",
     )
+    azure = parser.add_argument_group(
+        "azure mode", "Sign with your personal certificate in Azure Key "
+        "Vault (interactive Microsoft Entra ID login, one per batch). "
+        f"Each flag falls back to its SIGNAPP_AZURE_* environment variable."
+    )
+    azure.add_argument(
+        "--azure-vault-url", dest="azure_vault_url", default=None,
+        help=f"Key Vault URL (required in azure mode; env {ENV_AZURE_VAULT_URL}).",
+    )
+    azure.add_argument(
+        "--azure-key-name", dest="azure_key_name", default=None,
+        help="Explicit Key Vault key name. OVERRIDES the per-user derivation "
+             f"and is flagged in the output (env {ENV_AZURE_KEY_NAME}).",
+    )
+    azure.add_argument(
+        "--azure-key-name-template", dest="azure_key_name_template", default=None,
+        help="Template deriving the key name from the signed-in user; "
+             "placeholders {upn}, {upn_local}, {oid} (sanitised for Key "
+             f"Vault names). Default sig-{{upn}} (env {ENV_AZURE_KEY_TEMPLATE}).",
+    )
+    azure.add_argument(
+        "--azure-cert-name", dest="azure_cert_name", default=None,
+        help="Certificate name if it differs from the key name "
+             f"(env {ENV_AZURE_CERT_NAME}).",
+    )
+    azure.add_argument(
+        "--azure-auth", dest="azure_auth", choices=AZURE_AUTH_METHODS,
+        default=None,
+        help="Entra ID auth: interactive (system browser; GUI default), "
+             "device-code (headless CLI default), default "
+             "(DefaultAzureCredential — testing/CI only: it may select a "
+             "service principal and BREAKS the per-user model). "
+             f"Env {ENV_AZURE_AUTH}.",
+    )
+    azure.add_argument(
+        "--azure-trust-anchors", dest="azure_trust_anchors", default=None,
+        help="PEM/DER file or directory with the INTERNAL CA chain "
+             "(root + intermediates) used as LTV trust anchors in azure "
+             "mode — never the EU trusted list. Required for b-lt/b-lta "
+             f"(and for self-verification at b-t). Env {ENV_AZURE_TRUST_ANCHORS}.",
+    )
+    azure.add_argument(
+        "--azure-graph", dest="azure_use_graph", action="store_true",
+        help="Use the Microsoft Graph /me displayName for the vignette "
+             "instead of the certificate subject (opt-in).",
+    )
     return parser
 
 
@@ -1161,6 +1373,22 @@ def resolve_config(args) -> RunConfig:
         verify=getattr(args, "verify", True),
         legacy_cms=legacy_cms,
         refresh_trust_list=getattr(args, "refresh_trust_list", False),
+        # azure settings: flag > SIGNAPP_AZURE_* env > default-at-use.
+        azure_vault_url=(getattr(args, "azure_vault_url", None)
+                         or os.environ.get(ENV_AZURE_VAULT_URL)),
+        azure_key_name=(getattr(args, "azure_key_name", None)
+                        or os.environ.get(ENV_AZURE_KEY_NAME)),
+        azure_key_name_template=(getattr(args, "azure_key_name_template", None)
+                                 or os.environ.get(ENV_AZURE_KEY_TEMPLATE)),
+        azure_cert_name=(getattr(args, "azure_cert_name", None)
+                         or os.environ.get(ENV_AZURE_CERT_NAME)),
+        azure_auth=resolve_azure_auth(getattr(args, "azure_auth", None)),
+        azure_trust_anchors=(
+            Path(p) if (p := (getattr(args, "azure_trust_anchors", None)
+                              or os.environ.get(ENV_AZURE_TRUST_ANCHORS)))
+            else None
+        ),
+        azure_use_graph=getattr(args, "azure_use_graph", False),
     )
     validate_config(cfg)
     return cfg
@@ -1217,6 +1445,25 @@ def main() -> int:
 
             print(f"LTV trust anchors: EU trusted list ({resolve_lotl_url(cfg.trust_list_url)})")
         print(f"{len(cfg.inputs)} PDF(s). The PIN will be requested for each document.")
+    elif cfg.mode == "azure":
+        placed = cfg.x is not None and cfg.y is not None
+        where = (f"vignette page {cfg.page or 1} @ ({cfg.x:.0f}, {cfg.y:.0f})"
+                 if placed else "vignette bottom-right, last page")
+        print(f"Mode: Azure Key Vault — {where}. Vault: {cfg.azure_vault_url}")
+        # R11: AES, not QES — and the signature carries the user's identity.
+        print(
+            "Note: signs with YOUR personal Key Vault certificate — an "
+            "advanced electronic signature (AES), not a qualified one (QES); "
+            "the signature carries your name/identity.",
+        )
+        print(f"Signature level: {signature_level_label(cfg.pades_level)} "
+              f"— digest {cfg.digest}")
+        if level_needs_timestamp(cfg.pades_level):
+            print(f"RFC 3161 TSA: {resolve_tsa_url(cfg.timestamp_url)}")
+        if cfg.azure_trust_anchors:
+            print(f"LTV trust anchors: internal CA ({cfg.azure_trust_anchors})")
+        print(f"{len(cfg.inputs)} PDF(s). One Microsoft sign-in for the whole "
+              f"batch ({resolve_azure_auth(cfg.azure_auth)}).")
     else:
         print(
             f"Mode: image — {cfg.image_path} "
