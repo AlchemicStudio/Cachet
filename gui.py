@@ -35,13 +35,290 @@ _FRAME_MAX_W = 360   # max size of the page preview frame (px)
 _FRAME_MAX_H = 460
 
 
+# --------------------------------------------------------------------------
+# Step-5 explanation texts (left column: one short hint per input element;
+# right column: the mode/level/AES-vs-QES documentation; popup: full glossary)
+# --------------------------------------------------------------------------
+
+_HINT_WRAP = 430  # px; CTk labels do not auto-wrap
+
+_HINT_BEID = (
+    "Signs with the citizen's eID card: a QUALIFIED signature (QES), legally "
+    "equal to a handwritten one. Requires a card reader, the inserted card and "
+    "one PIN entry per document. ⚠ Embeds your national register number (RRN) "
+    "in every signature — mind how signed PDFs are distributed."
+)
+_HINT_AZURE = (
+    "Signs with your personal certificate held in Azure Key Vault: an ADVANCED "
+    "signature (AES). One Microsoft sign-in for the whole batch — no card, no "
+    "per-document PIN. Needs network access; only the document fingerprint "
+    "(digest) ever leaves this machine."
+)
+_HINT_IMAGE = (
+    "Pastes a picture onto the page. NOT a cryptographic signature: no legal "
+    "value, nothing to configure, works fully offline. Use it only when a "
+    "document merely needs to look signed."
+)
+_HINT_LEVEL = (
+    "Durability of the signature (eID and Azure modes). Keep the default "
+    "b-lta: the file stays verifiable for decades. Levels above b-b need "
+    "internet access (timestamp authority, trust lists, OCSP/CRL); choose "
+    "b-b only to sign offline. See the documentation panel for details."
+)
+_HINT_VAULT = (
+    "Required. The address of your organisation's Azure Key Vault, where your "
+    "personal signing key and certificate are stored (ask your administrator)."
+)
+_HINT_KEY = (
+    "Optional. Normally the key is derived from YOUR login (sig-<your-upn>), "
+    "so you can only sign in your own name. Fill this only to use another "
+    "key — the override is clearly flagged in the run output."
+)
+_HINT_ANCHORS = (
+    "PEM/DER file with your organisation's internal CA chain (root + "
+    "intermediates). Required for levels b-lt/b-lta and for the post-signing "
+    "verification: it anchors the trust of your certificate. The EU trusted "
+    "list is NOT used in Azure mode."
+)
+_HINT_AUTH = (
+    "How you sign in to Microsoft. 'interactive' opens your browser "
+    "(recommended); 'device-code' shows a code to type on another device "
+    "(for terminals); 'default' is for automation/testing only — it can pick "
+    "a service account and break the personal-signature model. Signing in "
+    "now is optional: otherwise the login simply happens at launch."
+)
+
+_DOC_INTRO = (
+    "Cachet produces three very different kinds of \"signature\". The summary "
+    "below explains the modes, the PAdES durability levels and the AES/QES "
+    "legal tiers — open \"Read more\" for the full glossary of every term "
+    "and technology used by the app."
+)
+
+_DOC_PANEL = """\
+THE THREE MODES
+
+Cachet signs a whole batch of PDFs the same way. Pick the mode that matches the legal weight you need.
+
+• BEID — your Belgian eID card
+  What it is: a qualified electronic signature (QES), the highest legal tier, equivalent to a handwritten signature.
+  Requires: a card reader, your eID card, and one PIN entry per document. A visible vignette (your photo, name, and date) is added.
+  Use it when: a document must be legally binding and provably signed by you in person.
+  Note: your national register number (RRN) is embedded in every signature, so share signed files carefully.
+
+• AZURE — your personal certificate in Azure Key Vault
+  What it is: an advanced electronic signature (AES). Strong and verifiable, but one tier below QES.
+  Requires: one Microsoft login per batch (not per document). Only the document digest leaves your machine; the private key never does. Trust is anchored on your organisation's internal CA.
+  Use it when: you need a real cryptographic signature for many files quickly, without your physical card.
+
+• IMAGE — paste a picture only
+  What it is: a visual stamp, NOT a cryptographic signature. No legal value.
+  Requires: nothing; works fully offline.
+  Use it when: you only need a document to look signed, with no legal effect.
+
+RECOMMENDATION: use BEID for legally binding documents, AZURE for large batches, and IMAGE only for appearance.
+
+
+PAdES LEVELS
+
+PAdES levels (ETSI EN 319 142-1) describe how durable and verifiable your signature is. Each level builds on the one before it. Cachet uses b-lta by default and never silently drops to a lower level if the network fails.
+
+• B-B (basic) — The core signature: it proves who signed and that the document has not changed. Works fully offline. Pick it only for quick internal drafts where long-term proof and a trusted time do not matter.
+
+• B-T (+ timestamp) — Adds a trusted timestamp from a time-stamping authority (TSA), proving WHEN you signed. Needs network access. Pick it when the signing date must be provable but long-term archiving is not required.
+
+• B-LT (+ long-term validation) — Embeds the revocation data (OCSP/CRL) and CA certificates inside the PDF (LTV). The signature stays verifiable even after the certificates expire. Needs network access. Pick it for documents you must keep and check years later.
+
+• B-LTA (+ archival, DEFAULT) — Adds an archival timestamp chain so the proof itself survives for decades (the chain is renewed every few years). Needs network access. This is the default because it gives the strongest, longest-lasting guarantee for official records.
+
+
+AES VS QES: WHICH SIGNATURE DO I NEED?
+
+Under EU law (eIDAS) there are three levels of electronic signature:
+
+• SES (simple): any electronic mark, even a pasted picture. Easy, but weak proof of who signed. This is what "image" mode produces — no legal value.
+
+• AES (advanced): uniquely tied to one signer and to the exact document; any later change is detectable. This is "azure" mode.
+
+• QES (qualified): an AES made with a certified device and a face-to-face-verified identity. By law it is equal to a handwritten signature. This is "beid" (eID card) mode.
+
+QES — eID CARD (beid)
+Pros: the strongest level; legally equal to a handwritten signature; accepted by any third party with no prior agreement.
+Cons: needs a card reader and your card; you type your PIN ONCE PER DOCUMENT (slow for big batches); your national register number (RRN) is embedded in every file.
+
+AES — AZURE KEY VAULT (azure)
+Pros: ONE login per batch, so fast for many files; no card or reader; no RRN exposure.
+Cons: not "qualified"; trust relies on your organisation's internal CA, so outside parties may not recognise it automatically.
+
+WHICH ONE SHOULD I CHOOSE?
+
+• Internal documents, or large batches: use azure (AES). One login signs the whole batch.
+
+• Documents leaving the organisation, or where a handwritten-equivalent signature is required: use beid (QES), accepting one PIN per document.
+
+• No card or reader available: azure is your only cryptographic option.
+"""
+
+_FULL_DOC = """\
+Cachet signs PDF documents in batches. It can apply three kinds of mark: a
+cryptographic signature made with your Belgian eID card (beid), a cryptographic
+signature made with your personal certificate held in Azure Key Vault (azure),
+or a simple pasted image with no legal value (image). For the two cryptographic
+modes it follows the European PAdES standard and, after signing, re-checks each
+file and tells you exactly what was achieved. The terms below explain what those
+checks and labels mean.
+
+
+GLOSSARY
+
+ELECTRONIC SIGNATURE
+A legally recognised way to sign a document electronically. Unlike a scanned
+handwritten signature, a cryptographic electronic signature also proves WHO
+signed and that the file has not changed since.
+
+SES / AES / QES
+The three eIDAS tiers, weakest to strongest. SES (simple) is just "an
+electronic mark". AES (advanced) is uniquely linked to the signer and detects
+any later change. QES (qualified) is an AES made with a qualified certificate
+and secure device, and is legally equal to a handwritten signature. eID = QES,
+Azure = AES, image = none.
+
+eIDAS
+The EU regulation that defines electronic signatures, trust services and the
+SES/AES/QES tiers, so a signature made in one EU country is recognised across
+the others.
+
+PAdES
+"PDF Advanced Electronic Signatures": the ETSI standard (EN 319 142-1) for
+embedding signatures inside PDF files. Cachet writes PAdES signatures so any
+compliant reader (e.g. Adobe) can verify them.
+
+CMS
+The low-level container format (Cryptographic Message Syntax) that actually
+holds the signature bytes, certificates and timestamps inside the PDF. PAdES is
+a PDF-specific profile built on top of CMS.
+
+DIGEST / HASH
+A short fixed-length fingerprint computed from the document. Change one byte and
+the fingerprint changes completely. The signature is made over this fingerprint,
+which is why only the digest, never the full file, is sent to Azure.
+
+CERTIFICATE
+An electronic identity card for a cryptographic key: it binds a public key to a
+person or service and is itself signed by a Certificate Authority. Yours proves
+the signature really came from you.
+
+CA / CERTIFICATE CHAIN
+A Certificate Authority (CA) issues certificates. Verifying a signature means
+following the chain from your certificate up through one or more CAs to a trusted
+root. If the whole chain checks out, the signature is trusted.
+
+eID / NON-REPUDIATION CERTIFICATE
+A Belgian eID card carries two certificates; Cachet uses the
+"non-repudiation" one, which is reserved for legally binding signatures (as
+opposed to the "authentication" certificate used only to log in).
+
+RRN
+The Belgian National Register Number. It is embedded in every eID signature.
+Anyone who receives a signed PDF can read it, so share signed files carefully.
+
+PKCS#11
+The standard software interface Cachet uses to talk to the eID card through the
+card-reader middleware. It lets the app use the card's key without the key ever
+leaving the card.
+
+PIN
+The secret code that unlocks your eID card's signing key. The card never reveals
+the key; it only signs when the PIN is correct. In beid mode Cachet asks for it
+once PER DOCUMENT.
+
+AZURE KEY VAULT
+A Microsoft cloud service that stores your personal certificate and key so the
+key cannot be exported. Signing happens inside the vault: only the document
+digest is sent there, and the signed result comes back.
+
+MICROSOFT ENTRA ID
+Microsoft's identity and login service (formerly Azure Active Directory). In
+azure mode you log in once PER BATCH to prove you may use your key in the vault.
+
+UPN
+User Principal Name: your sign-in identity in Entra ID, usually in the form
+name@organisation. It is how the app knows which vault account is yours.
+
+RFC 3161 TIMESTAMP / TSA
+A trusted, dated stamp proving the signature existed at a given moment. It comes
+from a Time-Stamping Authority (TSA) over the network and protects the signature
+even after the signing certificate later expires.
+
+QUALIFIED vs FREE TIMESTAMP
+A free timestamp (Cachet's default, from DigiCert) is technically valid and
+widely trusted. A qualified timestamp comes from an eIDAS-qualified TSA and
+carries stronger legal weight. Both prove "when"; only the qualified one is
+"qualified".
+
+LTV
+Long-Term Validation: enough proof is stored inside the PDF that it can still be
+verified years later, even after the certificates have expired or the issuing
+CA has gone offline.
+
+DSS
+The Document Security Store: the area inside the PDF where LTV evidence
+(certificates and revocation data) is kept so the file is self-contained.
+
+OCSP
+A live online check asking the CA "is this certificate still valid right now, or
+was it revoked?". The answer is saved in the DSS for LTV.
+
+CRL
+Certificate Revocation List: a published list of certificates the CA has
+cancelled. An alternative to OCSP for proving a certificate was still good when
+used; also stored for LTV.
+
+EU TRUSTED LIST (LOTL)
+The official EU list of trusted qualified providers (the List of Trusted Lists).
+eID (QES) trust ultimately traces here. Azure (AES) does NOT: it is trusted via
+your organisation's internal CA instead.
+
+INTERNAL CA
+Your organisation's own Certificate Authority. In azure mode, trust and LTV are
+anchored on this internal CA chain (a PEM file you provide), not on the EU
+Trusted List.
+
+VIGNETTE
+The small visible stamp Cachet draws on the page in eID mode: the cardholder's
+photo, "Signed by:", the name and the date. It is the human-readable face of an
+otherwise invisible cryptographic signature.
+
+TEMPLATE VALIDATION
+An optional safety check: before signing, every input PDF is compared to a model
+("template") and must have the same page count and identical page sizes. This
+guarantees the signature lands in the right spot on every file in the batch.
+
+B-LTA RENEWAL
+B-LTA (the default level) adds an archival timestamp chain so the evidence stays
+provable for decades. "Renewal" means that, every few years, a fresh archive
+timestamp must be added before the previous one's protection weakens.
+
+
+PAdES LEVELS, AT A GLANCE
+• B-B: basic signature, fully offline.
+• B-T: adds a trusted timestamp (network needed).
+• B-LT: adds revocation info and CA certs (LTV).
+• B-LTA: adds the archival timestamp chain (default).
+
+Cachet never silently downgrades these levels. If the network is unavailable
+and the requested level cannot be reached, it tells you rather than quietly
+producing a weaker signature.
+"""
+
+
 class CachetApp(ctk.CTk):
     """Main window: the whole workflow in a scrollable view."""
 
     def __init__(self, args):
         super().__init__()
         self.title(f"Cachet {core.__version__} — PDF signing")
-        self.geometry("900x900")
+        self.geometry("1180x950")  # two-column step 5 needs the width
         _style = ttk.Style()
         _style.configure("Treeview", rowheight=30, font=("", 11))   # tall rows, full text
         _style.configure("Treeview.Heading", font=("", 11, "bold"))
@@ -57,7 +334,7 @@ class CachetApp(ctk.CTk):
         self.pades_level_var = ctk.StringVar(value="b-lta")  # PAdES level
         # azure mode state (CACHET_AZURE_* env vars pre-fill the panel).
         self.azure_vault_var = ctk.StringVar(
-            value=os.environ.get(core.ENV_AZURE_VAULT_URL, ""))
+            value=os.environ.get(core.ENV_AZURE_VAULT_URL, "https://login.live.com"))
         self.azure_key_var = ctk.StringVar(
             value=os.environ.get(core.ENV_AZURE_KEY_NAME, ""))
         self.azure_auth_var = ctk.StringVar(value="interactive")  # GUI default
@@ -111,50 +388,112 @@ class CachetApp(ctk.CTk):
         ctk.CTkButton(root, text="Validate files", command=self._validate).pack(anchor="w")
         self.valid_table = self._make_table(root, ("File", "Result", "Detail"), height=5)
 
-        # 5. mode
+        # 5. mode — split vertically: controls + per-input explanations on the
+        # LEFT, the "which signature / which level / AES vs QES" docs on the
+        # RIGHT (with a Read-more popup for the full glossary).
         header("5. Signing mode")
-        row = ctk.CTkFrame(root, fg_color="transparent"); row.pack(fill="x")
-        ctk.CTkRadioButton(row, text="eID (card + vignette)", variable=self.mode_var,
-                           value="beid", command=self._refresh_placement_section).pack(side="left", padx=(0, 16))
-        ctk.CTkRadioButton(row, text="Image insertion", variable=self.mode_var,
-                           value="image", command=self._refresh_placement_section).pack(side="left")
-        ctk.CTkRadioButton(row, text="Azure (Microsoft login)", variable=self.mode_var,
-                           value="azure", command=self._refresh_placement_section).pack(side="left", padx=(16, 0))
-        ctk.CTkLabel(row, text="PAdES level:").pack(side="left", padx=(16, 4))
-        ctk.CTkOptionMenu(row, variable=self.pades_level_var,
-                          values=list(core.PADES_LEVELS), width=110).pack(side="left")
-        # R9: surface the RRN privacy implication of eID signatures.
-        ctk.CTkLabel(root, text="⚠ eID signatures embed the signer's national "
-                                "register number (RRN) — mind PDF distribution.",
-                     text_color=("gray25", "gray70")).pack(anchor="w")
+        split = ctk.CTkFrame(root, fg_color="transparent")
+        split.pack(fill="x", pady=(0, 4))
+        split.grid_columnconfigure(0, weight=1, uniform="step5")
+        split.grid_columnconfigure(1, weight=1, uniform="step5")
+
+        left = ctk.CTkFrame(split)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+
+        def hint(parent, txt, **pack_kw):
+            # Small gray explanation under each control: what it is, why we
+            # need it, whether it is required.
+            lbl = ctk.CTkLabel(parent, text=txt, justify="left", anchor="w",
+                               wraplength=_HINT_WRAP,
+                               text_color=("gray25", "gray70"),
+                               font=ctk.CTkFont(size=11))
+            lbl.pack(fill="x", padx=(28, 8), **pack_kw)
+            return lbl
+
+        # Radios stacked VERTICALLY, one explanation each.
+        ctk.CTkRadioButton(left, text="eID (card + vignette) — qualified, QES",
+                           variable=self.mode_var, value="beid",
+                           command=self._refresh_placement_section
+                           ).pack(anchor="w", padx=8, pady=(10, 0))
+        hint(left, _HINT_BEID, pady=(2, 8))
+        ctk.CTkRadioButton(left, text="Azure (Microsoft login) — advanced, AES",
+                           variable=self.mode_var, value="azure",
+                           command=self._refresh_placement_section
+                           ).pack(anchor="w", padx=8)
+        hint(left, _HINT_AZURE, pady=(2, 8))
+        ctk.CTkRadioButton(left, text="Image insertion — visual stamp only",
+                           variable=self.mode_var, value="image",
+                           command=self._refresh_placement_section
+                           ).pack(anchor="w", padx=8)
+        hint(left, _HINT_IMAGE, pady=(2, 8))
+
+        # PAdES level (used by the eID and Azure modes).
+        lrow = ctk.CTkFrame(left, fg_color="transparent")
+        lrow.pack(fill="x", padx=8)
+        ctk.CTkLabel(lrow, text="PAdES level:").pack(side="left")
+        ctk.CTkOptionMenu(lrow, variable=self.pades_level_var,
+                          values=list(core.PADES_LEVELS), width=110
+                          ).pack(side="left", padx=8)
+        hint(left, _HINT_LEVEL, pady=(2, 10))
 
         # Azure panel (shown only in azure mode; see _refresh_placement_section).
-        # Signs with the user's personal Key Vault certificate — an advanced
-        # (AES), not qualified, signature; one Microsoft login per batch.
-        self.azure_section = ctk.CTkFrame(root)
-        arow1 = ctk.CTkFrame(self.azure_section, fg_color="transparent")
-        arow1.pack(fill="x", pady=(6, 2), padx=6)
-        ctk.CTkLabel(arow1, text="Vault URL:").pack(side="left")
-        ctk.CTkEntry(arow1, textvariable=self.azure_vault_var, width=320).pack(
-            side="left", padx=(4, 16))
-        ctk.CTkLabel(arow1, text="Key name (optional override):").pack(side="left")
-        ctk.CTkEntry(arow1, textvariable=self.azure_key_var, width=160).pack(
-            side="left", padx=4)
-        arow2 = ctk.CTkFrame(self.azure_section, fg_color="transparent")
-        arow2.pack(fill="x", pady=2, padx=6)
-        ctk.CTkButton(arow2, text="Internal CA chain (PEM)…",
+        self.azure_section = ctk.CTkFrame(left, fg_color="transparent")
+        az = self.azure_section
+        ctk.CTkLabel(az, text="Azure settings",
+                     font=ctk.CTkFont(size=13, weight="bold")
+                     ).pack(anchor="w", padx=8)
+        arow1 = ctk.CTkFrame(az, fg_color="transparent")
+        arow1.pack(fill="x", padx=8, pady=(4, 0))
+        ctk.CTkLabel(arow1, text="Vault URL:", width=150, anchor="w").pack(side="left")
+        ctk.CTkEntry(arow1, textvariable=self.azure_vault_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 0))
+        hint(az, _HINT_VAULT, pady=(2, 6))
+        arow2 = ctk.CTkFrame(az, fg_color="transparent")
+        arow2.pack(fill="x", padx=8)
+        ctk.CTkLabel(arow2, text="Key name (override):", width=150, anchor="w"
+                     ).pack(side="left")
+        ctk.CTkEntry(arow2, textvariable=self.azure_key_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 0))
+        hint(az, _HINT_KEY, pady=(2, 6))
+        arow3 = ctk.CTkFrame(az, fg_color="transparent")
+        arow3.pack(fill="x", padx=8)
+        ctk.CTkButton(arow3, text="Internal CA chain (PEM)…", width=180,
                       command=self._pick_azure_anchors).pack(side="left")
         self.azure_anchors_lbl = ctk.CTkLabel(
-            arow2, text=str(self.azure_anchors_path or "(required for b-lt/b-lta)"))
+            arow3, text=str(self.azure_anchors_path or "(none chosen)"))
         self.azure_anchors_lbl.pack(side="left", padx=8)
-        ctk.CTkLabel(arow2, text="Auth:").pack(side="left", padx=(16, 4))
-        ctk.CTkOptionMenu(arow2, variable=self.azure_auth_var,
-                          values=list(core.AZURE_AUTH_METHODS), width=130).pack(side="left")
+        hint(az, _HINT_ANCHORS, pady=(2, 6))
+        arow4 = ctk.CTkFrame(az, fg_color="transparent")
+        arow4.pack(fill="x", padx=8)
+        ctk.CTkLabel(arow4, text="Auth method:", width=150, anchor="w"
+                     ).pack(side="left")
+        ctk.CTkOptionMenu(arow4, variable=self.azure_auth_var,
+                          values=list(core.AZURE_AUTH_METHODS), width=140
+                          ).pack(side="left", padx=(4, 12))
         self.azure_login_btn = ctk.CTkButton(
-            arow2, text="Sign in with Microsoft", command=self._azure_sign_in)
-        self.azure_login_btn.pack(side="left", padx=(16, 4))
-        self.azure_login_lbl = ctk.CTkLabel(arow2, text="(not signed in)")
-        self.azure_login_lbl.pack(side="left", padx=4)
+            arow4, text="Sign in with Microsoft", command=self._azure_sign_in)
+        self.azure_login_btn.pack(side="left")
+        self.azure_login_lbl = ctk.CTkLabel(arow4, text="(not signed in)")
+        self.azure_login_lbl.pack(side="left", padx=8)
+        hint(az, _HINT_AUTH, pady=(2, 8))
+
+        # RIGHT column: documentation panel + Read-more popup.
+        right = ctk.CTkFrame(split)
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        ctk.CTkLabel(right, text="Which signature should I use?",
+                     font=ctk.CTkFont(size=14, weight="bold")
+                     ).pack(anchor="w", padx=10, pady=(10, 2))
+        ctk.CTkLabel(right, text=_DOC_INTRO, justify="left", anchor="w",
+                     wraplength=_HINT_WRAP,
+                     font=ctk.CTkFont(size=11)).pack(fill="x", padx=10)
+        self.doc_box = ctk.CTkTextbox(right, wrap="word", height=330,
+                                      font=ctk.CTkFont(size=12))
+        self.doc_box.pack(fill="both", expand=True, padx=10, pady=(6, 2))
+        self.doc_box.insert("1.0", _DOC_PANEL)
+        self.doc_box.configure(state="disabled")
+        ctk.CTkButton(right, text="Read more — full documentation…",
+                      command=self._show_docs_popup
+                      ).pack(anchor="e", padx=10, pady=(2, 10))
 
         # 6. page + position (BOTH modes; the image choice appears only in image mode)
         self.image_section = ctk.CTkFrame(root)
@@ -216,10 +555,28 @@ class CachetApp(ctk.CTk):
         else:
             self.image_row.pack_forget()                  # beid/azure: no image
         if self.mode_var.get() == "azure":
-            self.azure_section.pack(fill="x", pady=4, before=self.image_section)
+            # lives at the end of the step-5 LEFT column -> plain pack works
+            self.azure_section.pack(fill="x", pady=(0, 8))
         else:
             self.azure_section.pack_forget()
         self._draw_page()
+
+    # ---------------------------------------------------------- documentation
+    def _show_docs_popup(self) -> None:
+        """'Read more' window: the full glossary of every term/technology."""
+        win = getattr(self, "_docs_win", None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+            win.focus()
+            return
+        win = ctk.CTkToplevel(self)
+        win.title("Cachet — Documentation")
+        win.geometry("840x780")
+        box = ctk.CTkTextbox(win, wrap="word", font=ctk.CTkFont(size=13))
+        box.pack(fill="both", expand=True, padx=12, pady=12)
+        box.insert("1.0", _FULL_DOC)
+        box.configure(state="disabled")
+        self._docs_win = win
 
     # ------------------------------------------------------------ azure auth
     def _pick_azure_anchors(self) -> None:

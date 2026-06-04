@@ -590,6 +590,27 @@ class GuiAzurePanel(unittest.TestCase):
         finally:
             app.destroy()
 
+    def test_vault_url_prefilled_and_docs_popup(self):
+        import gui
+
+        with mock.patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop(core.ENV_AZURE_VAULT_URL, None)
+            app = gui.CachetApp(SimpleNamespace(lib=None))
+        try:
+            app.update()
+            self.assertEqual(app.azure_vault_var.get(), "https://login.live.com")
+            self.assertIn("THE THREE MODES", app.doc_box.get("1.0", "end"))
+            app._show_docs_popup()
+            app.update()
+            self.assertTrue(app._docs_win.winfo_exists())
+            self.assertEqual(app._docs_win.title(), "Cachet — Documentation")
+            first = app._docs_win
+            app._show_docs_popup()  # second click reuses the window
+            self.assertIs(app._docs_win, first)
+        finally:
+            app.destroy()
+
 
 class CredentialCanary(unittest.TestCase):
     """azure path fails cleanly with actionable errors — no real login."""
