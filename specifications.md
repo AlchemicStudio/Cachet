@@ -8,7 +8,7 @@ Persist this entire specification to `specifications.md` at the repo root, then 
 
 # 1. Repository context
 
-This is `signApp`, a batch PDF signer for the Belgian eID card.
+This is `Cachet`, a batch PDF signer for the Belgian eID card.
 
 - All business logic lives in `sign_pdfs_beid.py` (core + CLI). It must keep importing **without tkinter** (there is a regression test for this: `HeadlessImport`).
 - `gui.py` is a CustomTkinter façade over the core; it currently exposes a boolean **PAdES** checkbox.
@@ -30,7 +30,7 @@ The current `sign_one()` only sets `field_name` + `subfilter`; it passes **no** 
 
 # 3. Decisions already made (treat as fixed)
 
-1. **Timestamp authority**: default to a **free public RFC 3161 TSA**, fully overridable. Default URL: `http://timestamp.digicert.com`. Overridable via `--timestamp-url <url>` and the `SIGNAPP_TSA_URL` environment variable (flag wins over env, env wins over default).
+1. **Timestamp authority**: default to a **free public RFC 3161 TSA**, fully overridable. Default URL: `http://timestamp.digicert.com`. Overridable via `--timestamp-url <url>` and the `CACHET_TSA_URL` environment variable (flag wins over env, env wins over default).
    - ⚠️ Document clearly that a free TSA yields a *technically valid* B-T/B-LTA but **not a qualified timestamp**. For genuine qualified long-term preservation the operator must point `--timestamp-url` at a **qualified** TSA. State this in `README.md`.
 2. **Trust anchors for LTV**: **fetch the EU Trusted List (LOTL) at runtime**, follow the pointer to the Belgian national trusted list, extract the X.509 certificates of trust service providers qualified for electronic signatures, and use them to seed the `ValidationContext` trust roots. Cache the result locally with a sensible TTL; fail with a clear, actionable error if the list cannot be fetched.
 3. **CLI surface**: add `--pades-level {b-b,b-t,b-lt,b-lta}`, **default `b-lta`**.
@@ -52,7 +52,7 @@ The current `sign_one()` only sets `field_name` + `subfilter`; it passes **no** 
 **R6 — Pinned digest.** Add `--digest` (default `sha256`, also allow `sha384`, `sha512`) and pass it explicitly as `md_algorithm` instead of relying on the library default.
 
 **R7 — EU Trusted List trust provider (new module).** Create a dedicated module (e.g. `trust.py`) that:
-   - fetches the EU List of Trusted Lists from `https://ec.europa.eu/tools/lotl/eu-lotl.xml` (make the URL overridable via `--trust-list-url` / `SIGNAPP_LOTL_URL`),
+   - fetches the EU List of Trusted Lists from `https://ec.europa.eu/tools/lotl/eu-lotl.xml` (make the URL overridable via `--trust-list-url` / `CACHET_LOTL_URL`),
    - resolves the Belgian national trusted list, extracts the qualified-for-eSignature CA certificates,
    - returns them as a list of trust anchors for the `ValidationContext`,
    - caches to a local file under the OS cache dir (use `platformdirs`, already a dependency) with a configurable TTL (default 24h) and a `--refresh-trust-list` flag to force a refresh,
@@ -76,7 +76,7 @@ The current `sign_one()` only sets `field_name` + `subfilter`; it passes **no** 
 - **`process_batch()`**: build the timestamper and the `ValidationContext` **once** before the loop (alongside the existing single PKCS#11 session), reuse across documents; thread the level through; run R8 verification per document.
 - **`build_arg_parser()` / `resolve_config()`**: wire all new flags; keep the legacy positional form working; update validation in `validate_config()`.
 - **`gui.py`**: replace the boolean **PAdES** checkbox with a **level selector** (dropdown / segmented control) defaulting to `b-lta`; thread `pades_level` (and sensible defaults for the rest) into `RunConfig`. Keep the worker-thread / queue / `after()` invariants intact (do not reintroduce Tk calls off the main thread).
-- **`requirements.txt` + `signApp.spec`**: if any new runtime dependency is added (e.g. an LOTL parser), pin it in `requirements.txt` **and** add it to the appropriate `collect_all` / hiddenimports in `signApp.spec` so both frozen binaries still build. `lxml` is already bundled.
+- **`requirements.txt` + `cachet.spec`**: if any new runtime dependency is added (e.g. an LOTL parser), pin it in `requirements.txt` **and** add it to the appropriate `collect_all` / hiddenimports in `cachet.spec` so both frozen binaries still build. `lxml` is already bundled.
 
 ---
 
@@ -98,7 +98,7 @@ Real eID + TSA + LTV signing remains a **manual acceptance test on real hardware
 
 - [x] `--pades-level {b-b,b-t,b-lt,b-lta}` exists, defaults to `b-lta`.
 - [x] `--pades` is a deprecated no-op alias with a warning; `--legacy-cms` reaches the old `adbe.pkcs7.detached` path and is mutually exclusive with PAdES levels > b-b.
-- [x] `--timestamp-url` (+ `SIGNAPP_TSA_URL`, default DigiCert free TSA) wired; `HTTPTimeStamper` attached for levels ≥ b-t.
+- [x] `--timestamp-url` (+ `CACHET_TSA_URL`, default DigiCert free TSA) wired; `HTTPTimeStamper` attached for levels ≥ b-t.
 - [x] `embed_validation_info=True` + fetching `ValidationContext` for b-lt/b-lta; `use_pades_lta=True` for b-lta.
 - [x] `--digest` pins `md_algorithm` (default sha256).
 - [x] `trust.py` fetches the EU LOTL → Belgian list → qualified eSig CA certs, with cache/TTL/refresh and clear offline errors; seeds the `ValidationContext` trust roots.
@@ -107,7 +107,7 @@ Real eID + TSA + LTV signing remains a **manual acceptance test on real hardware
 - [x] No silent level downgrade on network failure; `b-b` and `image` work offline.
 - [x] All “long-term archiving” false claims removed; README/CLAUDE.md/BUILD.md updated (flags, network requirement, free-vs-qualified TSA caveat, RRN).
 - [x] GUI exposes a level selector defaulting to b-lta; thread-safety invariants preserved.
-- [x] `requirements.txt` + `signApp.spec` updated for any new dependency; both binaries still build.
+- [x] `requirements.txt` + `cachet.spec` updated for any new dependency; both binaries still build.
 - [x] `python -m unittest -v` is green; `HeadlessImport` and the image-mode smoke test pass.
 
 ---

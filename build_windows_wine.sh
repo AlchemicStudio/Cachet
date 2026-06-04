@@ -7,9 +7,9 @@
 #      installed under Wine; the output is a real PE .exe.
 #
 #  Known limitations (cf. BUILD.md):
-#    - The GUI (signApp.exe) often does NOT display correctly UNDER Wine
+#    - The GUI (cachet.exe) often does NOT display correctly UNDER Wine
 #      (Tcl/Tk + GDI bugs specific to Wine) — this is a Wine artifact, not the
-#      binary: TEST signApp.exe on a REAL Windows.
+#      binary: TEST cachet.exe on a REAL Windows.
 #    - eID mode is NOT testable under Wine (no reader, no card, no
 #      beidpkcs11.dll DLL). Only image mode can be exercised.
 #    - The result must be validated on a real Windows before distribution.
@@ -21,7 +21,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 export WINEARCH=win64
-export WINEPREFIX="${WINEPREFIX:-$HOME/.wine-signapp}"
+export WINEPREFIX="${WINEPREFIX:-$HOME/.wine-cachet}"
 export WINEDEBUG="${WINEDEBUG:--all}"
 
 # Windows Python used under Wine. 3.12 is the most reliable under Wine; all
@@ -70,13 +70,13 @@ wine "$WINPY_UNIX" -m pip install --only-binary=:all: \
      -r requirements.txt -r requirements-build.txt tzdata
 
 echo ">> PyInstaller under Wine…"
-wine "$WINPY_UNIX" -m PyInstaller --noconfirm --clean signApp.spec
+wine "$WINPY_UNIX" -m PyInstaller --noconfirm --clean cachet.spec
 
 echo
 echo "=== Result (dist/) ==="
 ls -la dist/ || true
 echo
-echo "⚠️  Validate signApp.exe / signApp-cli.exe on a REAL Windows:"
-echo "    - GUI: double-click signApp.exe;"
+echo "⚠️  Validate cachet.exe / cachet-cli.exe on a REAL Windows:"
+echo "    - GUI: double-click cachet.exe;"
 echo "    - eID: Belgian eID middleware + reader + card required;"
 echo "    - sign a test PDF and verify the signature (Adobe Reader / pyHanko)."

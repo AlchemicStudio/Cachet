@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build of both LINUX executables:
-#   dist/signApp       (windowed: double-click -> GUI)
-#   dist/signApp-cli   (console: batch signing/stamping)
+#   dist/cachet       (windowed: double-click -> GUI)
+#   dist/cachet-cli   (console: batch signing/stamping)
 #
 # Usage:  ./build_linux.sh
 #
@@ -32,7 +32,7 @@ print("   tkinter OK")
 EOF
 
 echo ">> PyInstaller…"
-"$PY" -m PyInstaller --noconfirm --clean signApp.spec
+"$PY" -m PyInstaller --noconfirm --clean cachet.spec
 
 echo
 echo "=== Produced executables ==="

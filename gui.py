@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CustomTkinter graphical interface for signApp.
+"""CustomTkinter graphical interface for Cachet.
 
 This module is imported ONLY when running `sign_pdfs_beid.py --gui`: it
 depends on tkinter/customtkinter, which are absent in CLI/headless mode. All the
@@ -35,12 +35,12 @@ _FRAME_MAX_W = 360   # max size of the page preview frame (px)
 _FRAME_MAX_H = 460
 
 
-class SignApp(ctk.CTk):
+class CachetApp(ctk.CTk):
     """Main window: the whole workflow in a scrollable view."""
 
     def __init__(self, args):
         super().__init__()
-        self.title("signApp — PDF signing")
+        self.title("Cachet — PDF signing")
         self.geometry("900x900")
         _style = ttk.Style()
         _style.configure("Treeview", rowheight=30, font=("", 11))   # tall rows, full text
@@ -55,7 +55,7 @@ class SignApp(ctk.CTk):
         self.output_dir: Path | None = None
         self.mode_var = ctk.StringVar(value="beid")
         self.pades_level_var = ctk.StringVar(value="b-lta")  # PAdES level
-        # azure mode state (SIGNAPP_AZURE_* env vars pre-fill the panel).
+        # azure mode state (CACHET_AZURE_* env vars pre-fill the panel).
         self.azure_vault_var = ctk.StringVar(
             value=os.environ.get(core.ENV_AZURE_VAULT_URL, ""))
         self.azure_key_var = ctk.StringVar(
@@ -521,6 +521,6 @@ class SignApp(ctk.CTk):
 def launch_gui(args) -> int:
     """Entry point called by `sign_pdfs_beid.py --gui`."""
     ctk.set_appearance_mode("system")
-    app = SignApp(args)
+    app = CachetApp(args)
     app.mainloop()
     return 0

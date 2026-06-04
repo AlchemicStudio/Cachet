@@ -1,12 +1,12 @@
 # Building the standalone executables (Linux & Windows)
 
-`signApp` is packaged with **PyInstaller** into **two standalone binaries**,
-from a single recipe file `signApp.spec`:
+`Cachet` is packaged with **PyInstaller** into **two standalone binaries**,
+from a single recipe file `cachet.spec`:
 
 | Binary | Type | Role | Double-click |
 |---|---|---|---|
-| **`signApp`** (`.exe` on Windows) | windowed (`console=False`) | opens the CustomTkinter **graphical interface** | ➜ launches the GUI |
-| **`signApp-cli`** (`.exe` on Windows) | console (`console=True`) | **batch signing/stamping** from a terminal | ➜ shows the help |
+| **`cachet`** (`.exe` on Windows) | windowed (`console=False`) | opens the CustomTkinter **graphical interface** | ➜ launches the GUI |
+| **`cachet-cli`** (`.exe` on Windows) | console (`console=True`) | **batch signing/stamping** from a terminal | ➜ shows the help |
 
 The console binary is deliberately **headless** (no Tk) and thus lighter; the
 windowed binary bundles Tk + CustomTkinter + the whole engine.
@@ -21,8 +21,8 @@ windowed binary bundles Tk + CustomTkinter + the whole engine.
 
 ```bash
 ./build_linux.sh
-# -> dist/signApp        (GUI)
-# -> dist/signApp-cli    (CLI)
+# -> dist/cachet        (GUI)
+# -> dist/cachet-cli    (CLI)
 ```
 
 The windowed binary requires `tkinter`/`_tkinter` in the venv's Python. On
@@ -42,8 +42,8 @@ Prerequisites: **64-bit Python 3.12 / 3.13 / 3.14** installed with the
 
 ```bat
 build_windows.bat
-:: -> dist\signApp.exe        (GUI)
-:: -> dist\signApp-cli.exe    (CLI)
+:: -> dist\cachet.exe        (GUI)
+:: -> dist\cachet-cli.exe    (CLI)
 ```
 
 This is the recommended route for a production deliverable: it produces a native
@@ -63,8 +63,8 @@ git remote add origin git@github.com:<you>/<repo>.git
 git push -u origin main
 ```
 
-Then: **Actions** tab → run → **Artifacts** → `signApp-windows-latest` /
-`signApp-ubuntu-latest`. Can also be triggered manually (*workflow_dispatch*).
+Then: **Actions** tab → run → **Artifacts** → `cachet-windows-latest` /
+`cachet-ubuntu-latest`. Can also be triggered manually (*workflow_dispatch*).
 
 The CI's Python version is `3.13` (variable `PYTHON_VERSION` at the top of the
 workflow; `3.14` works too).
@@ -81,10 +81,10 @@ workflow; `3.14` works too).
 ```bash
 sudo apt install wine        # single root step, run it yourself
 ./build_windows_wine.sh      # downloads Windows Python, installs the deps, builds
-# -> dist/signApp.exe, dist/signApp-cli.exe
+# -> dist/cachet.exe, dist/cachet-cli.exe
 ```
 
-The script creates a 64-bit Wine prefix (`~/.wine-signapp`), installs Python 3.12
+The script creates a 64-bit Wine prefix (`~/.wine-cachet`), installs Python 3.12
 for Windows (all pinned `win_amd64` *wheels* exist as cp312), `pip install
 --only-binary=:all:` (a missing wheel fails outright rather than attempting an
 impossible compilation under Wine), then runs PyInstaller.
@@ -129,8 +129,8 @@ and testable without hardware.
 
 ## Customization
 
-- **Icon**: drop `signApp.ico` (Windows) or `signApp.icns` (macOS) next to
-  `signApp.spec` — it will be picked up automatically. On Linux the icon is
+- **Icon**: drop `cachet.ico` (Windows) or `cachet.icns` (macOS) next to
+  `cachet.spec` — it will be picked up automatically. On Linux the icon is
   ignored by PyInstaller (provide a `.desktop` file with `Icon=` instead).
 - **onefile → onedir**: by default each binary is *onefile* (a single file,
   slightly slower startup because it is decompressed into a temporary folder).

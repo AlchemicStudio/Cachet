@@ -573,7 +573,7 @@ class GuiAzurePanel(unittest.TestCase):
     def test_azure_panel_toggles_with_mode(self):
         import gui
 
-        app = gui.SignApp(SimpleNamespace(lib=None))
+        app = gui.CachetApp(SimpleNamespace(lib=None))
         try:
             app.update()
             app.mode_var.set("azure")

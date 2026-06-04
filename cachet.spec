@@ -1,14 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller — two standalone executables, from ONE single spec.
 
-    pyinstaller signApp.spec        # Linux -> dist/signApp + dist/signApp-cli
-                                    # Windows -> dist/signApp.exe + dist/signApp-cli.exe
+    pyinstaller cachet.spec        # Linux -> dist/cachet + dist/cachet-cli
+                                    # Windows -> dist/cachet.exe + dist/cachet-cli.exe
 
 Produces:
-  * "signApp"        : WINDOWED binary (console=False). Double-click -> opens the
+  * "cachet"        : WINDOWED binary (console=False). Double-click -> opens the
                        CustomTkinter GUI (entry point: gui_main.py). Bundles
                        Tk/CustomTkinter + the whole engine.
-  * "signApp-cli"    : CONSOLE binary (console=True). Batch signing/stamping
+  * "cachet-cli"    : CONSOLE binary (console=True). Batch signing/stamping
                        from a terminal (entry point: sign_pdfs_beid.py).
                        Deliberately WITHOUT Tk (headless), hence lighter.
 
@@ -53,7 +53,7 @@ def _meta(dist, datas):
     try:
         datas.extend(copy_metadata(dist))
     except Exception as exc:  # pragma: no cover - depends on the environment
-        print(f"[signApp.spec] copy_metadata({dist!r}) ignored: {exc}")
+        print(f"[cachet.spec] copy_metadata({dist!r}) ignored: {exc}")
 
 
 # --- Common engine (CLI + GUI): no Tk dependency here ----------------------- #
@@ -172,18 +172,18 @@ CLI_EXCLUDES = [
     "pypdfium2_raw",
 ]
 
-# Optional icon: drop signApp.ico (Windows) / signApp.icns (macOS) next to
+# Optional icon: drop cachet.ico (Windows) / cachet.icns (macOS) next to
 # this spec to customize. Absent -> default icon.
 import os as _os
 
 _ICON = None
-for _cand in ("signApp.ico", "signApp.icns"):
+for _cand in ("cachet.ico", "cachet.icns"):
     if _os.path.exists(_cand):
         _ICON = _cand
         break
 
 # --------------------------------------------------------------------------- #
-#  CONSOLE binary: signApp-cli  (entry = sign_pdfs_beid.py)
+#  CONSOLE binary: cachet-cli  (entry = sign_pdfs_beid.py)
 # --------------------------------------------------------------------------- #
 a_cli = Analysis(
     ["sign_pdfs_beid.py"],
@@ -203,7 +203,7 @@ exe_cli = EXE(
     a_cli.binaries,
     a_cli.datas,
     [],
-    name="signApp-cli",
+    name="cachet-cli",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -222,7 +222,7 @@ exe_cli = EXE(
 )
 
 # --------------------------------------------------------------------------- #
-#  WINDOWED binary: signApp  (entry = gui_main.py)
+#  WINDOWED binary: cachet  (entry = gui_main.py)
 # --------------------------------------------------------------------------- #
 a_gui = Analysis(
     ["gui_main.py"],
@@ -242,7 +242,7 @@ exe_gui = EXE(
     a_gui.binaries,
     a_gui.datas,
     [],
-    name="signApp",
+    name="cachet",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

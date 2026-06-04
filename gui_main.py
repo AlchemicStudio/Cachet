@@ -2,9 +2,9 @@
 """Entry point of the GUI executable (windowed binary).
 
 Launches the CustomTkinter graphical interface directly, WITHOUT having to pass
-``--gui``: this is the entry point of the windowed "signApp" binary produced by
-PyInstaller (see ``signApp.spec``). The console binary "signApp-cli" instead
-uses ``sign_pdfs_beid.py`` (the CLI). Double-clicking "signApp" therefore opens
+``--gui``: this is the entry point of the windowed "cachet" binary produced by
+PyInstaller (see ``cachet.spec``). The console binary "cachet-cli" instead
+uses ``sign_pdfs_beid.py`` (the CLI). Double-clicking "cachet" therefore opens
 the window directly.
 
 The same flags as the CLI are accepted (notably ``--lib``) and passed on to the
@@ -33,7 +33,7 @@ def main() -> int:
         try:
             import tkinter.messagebox as mb
 
-            mb.showerror("signApp", msg)
+            mb.showerror("Cachet", msg)
         except Exception:  # noqa: BLE001
             print(msg, file=sys.stderr)
         return 1

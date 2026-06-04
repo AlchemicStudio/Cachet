@@ -394,26 +394,26 @@ DIGEST_CHOICES = ("sha256", "sha384", "sha512")
 # *qualified* timestamp; point --timestamp-url at a qualified TSA for
 # eIDAS-grade long-term preservation (see README).
 DEFAULT_TSA_URL = "http://timestamp.digicert.com"
-ENV_TSA_URL = "SIGNAPP_TSA_URL"
+ENV_TSA_URL = "CACHET_TSA_URL"
 
 # azure mode (Entra ID + Key Vault, personal AES). Flag > env > default.
 AZURE_AUTH_METHODS = ("interactive", "device-code", "default")
-ENV_AZURE_VAULT_URL = "SIGNAPP_AZURE_VAULT_URL"
-ENV_AZURE_KEY_NAME = "SIGNAPP_AZURE_KEY_NAME"
-ENV_AZURE_KEY_TEMPLATE = "SIGNAPP_AZURE_KEY_NAME_TEMPLATE"
-ENV_AZURE_CERT_NAME = "SIGNAPP_AZURE_CERT_NAME"
-ENV_AZURE_AUTH = "SIGNAPP_AZURE_AUTH"
-ENV_AZURE_TRUST_ANCHORS = "SIGNAPP_AZURE_TRUST_ANCHORS"
+ENV_AZURE_VAULT_URL = "CACHET_AZURE_VAULT_URL"
+ENV_AZURE_KEY_NAME = "CACHET_AZURE_KEY_NAME"
+ENV_AZURE_KEY_TEMPLATE = "CACHET_AZURE_KEY_NAME_TEMPLATE"
+ENV_AZURE_CERT_NAME = "CACHET_AZURE_CERT_NAME"
+ENV_AZURE_AUTH = "CACHET_AZURE_AUTH"
+ENV_AZURE_TRUST_ANCHORS = "CACHET_AZURE_TRUST_ANCHORS"
 
 
 def resolve_azure_auth(explicit: str | None = None) -> str:
-    """Auth method precedence: --azure-auth > SIGNAPP_AZURE_AUTH >
+    """Auth method precedence: --azure-auth > CACHET_AZURE_AUTH >
     device-code (the headless-CLI default; the GUI passes interactive)."""
     return explicit or os.environ.get(ENV_AZURE_AUTH) or "device-code"
 
 
 def resolve_tsa_url(explicit: str | None = None) -> str:
-    """TSA URL precedence: --timestamp-url flag > SIGNAPP_TSA_URL > default."""
+    """TSA URL precedence: --timestamp-url flag > CACHET_TSA_URL > default."""
     return explicit or os.environ.get(ENV_TSA_URL) or DEFAULT_TSA_URL
 
 
@@ -788,8 +788,8 @@ class RunConfig:
     page: int | None = None
     x: float | None = None
     y: float | None = None
-    timestamp_url: str | None = None   # None -> SIGNAPP_TSA_URL env -> DigiCert
-    trust_list_url: str | None = None  # None -> SIGNAPP_LOTL_URL env -> EU LOTL
+    timestamp_url: str | None = None   # None -> CACHET_TSA_URL env -> DigiCert
+    trust_list_url: str | None = None  # None -> CACHET_LOTL_URL env -> EU LOTL
     digest: str = "sha256"             # sha256 | sha384 | sha512
     verify: bool = True                # post-signing self-verification (>= b-t)
     legacy_cms: bool = False           # deprecated adbe.pkcs7.detached path
@@ -903,7 +903,7 @@ def build_signing_material(cfg: RunConfig) -> SigningMaterial:
     """Resolve the per-batch signing material for cfg's level (beid/azure).
 
     Levels >= b-t get an RFC 3161 ``HTTPTimeStamper`` (URL precedence:
-    flag > SIGNAPP_TSA_URL > DigiCert default). Levels b-lt/b-lta also get a
+    flag > CACHET_TSA_URL > DigiCert default). Levels b-lt/b-lta also get a
     fetching ``ValidationContext`` whose trust roots are seeded with the
     mode's anchors, so OCSP/CRL material can be gathered and embedded.
 
@@ -1253,7 +1253,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--trust-list-url", dest="trust_list_url", default=None,
         help="EU List of Trusted Lists (LOTL) URL seeding the LTV trust "
-             "anchors for b-lt/b-lta. Precedence: this flag > SIGNAPP_LOTL_URL "
+             "anchors for b-lt/b-lta. Precedence: this flag > CACHET_LOTL_URL "
              "env var > https://ec.europa.eu/tools/lotl/eu-lotl.xml.",
     )
     parser.add_argument(
@@ -1272,7 +1272,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     azure = parser.add_argument_group(
         "azure mode", "Sign with your personal certificate in Azure Key "
         "Vault (interactive Microsoft Entra ID login, one per batch). "
-        f"Each flag falls back to its SIGNAPP_AZURE_* environment variable."
+        f"Each flag falls back to its CACHET_AZURE_* environment variable."
     )
     azure.add_argument(
         "--azure-vault-url", dest="azure_vault_url", default=None,
@@ -1373,7 +1373,7 @@ def resolve_config(args) -> RunConfig:
         verify=getattr(args, "verify", True),
         legacy_cms=legacy_cms,
         refresh_trust_list=getattr(args, "refresh_trust_list", False),
-        # azure settings: flag > SIGNAPP_AZURE_* env > default-at-use.
+        # azure settings: flag > CACHET_AZURE_* env > default-at-use.
         azure_vault_url=(getattr(args, "azure_vault_url", None)
                          or os.environ.get(ENV_AZURE_VAULT_URL)),
         azure_key_name=(getattr(args, "azure_key_name", None)

@@ -1,7 +1,7 @@
 name: Build executables
 
-# Builds both executables (windowed signApp + console signApp-cli) on
-# Windows AND Linux using the shared signApp.spec, then publishes the
+# Builds both executables (windowed cachet + console cachet-cli) on
+# Windows AND Linux using the shared cachet.spec, then publishes the
 # downloadable artifacts. Triggered on push/tag/manual.
 on:
   push:
@@ -45,7 +45,7 @@ jobs:
           pip install -r requirements.txt -r requirements-build.txt
 
       - name: Build with PyInstaller
-        run: pyinstaller --noconfirm --clean signApp.spec
+        run: pyinstaller --noconfirm --clean cachet.spec
 
       # Smoke-test WITHOUT a card: we generate the fixtures with the project's
       # generators (make_pdf writes a valid raw PDF; make_png a PNG), then we
@@ -62,7 +62,7 @@ jobs:
           make_png("sig.png")
           print("fixtures written")
           PY
-          CLI=$(ls dist/signApp-cli* | head -1)
+          CLI=$(ls dist/cachet-cli* | head -1)
           echo "CLI binary: $CLI"
           "$CLI" --help >/dev/null
           "$CLI" --mode image --image-path sig.png --input smoke.pdf \
@@ -75,18 +75,18 @@ jobs:
         run: |
           ls -la dist/
           # the windowed binary + the console binary must both be present
-          test -n "$(ls dist/signApp dist/signApp.exe 2>/dev/null)" || { echo "FAIL: signApp missing"; exit 1; }
-          test -n "$(ls dist/signApp-cli dist/signApp-cli.exe 2>/dev/null)" || { echo "FAIL: signApp-cli missing"; exit 1; }
+          test -n "$(ls dist/cachet dist/cachet.exe 2>/dev/null)" || { echo "FAIL: cachet missing"; exit 1; }
+          test -n "$(ls dist/cachet-cli dist/cachet-cli.exe 2>/dev/null)" || { echo "FAIL: cachet-cli missing"; exit 1; }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           # unique name per OS: upload-artifact@v4 rejects duplicate names.
-          name: signApp-${{ matrix.os }}
+          name: cachet-${{ matrix.os }}
           path: |
-            dist/signApp
-            dist/signApp.exe
-            dist/signApp-cli
-            dist/signApp-cli.exe
+            dist/cachet
+            dist/cachet.exe
+            dist/cachet-cli
+            dist/cachet-cli.exe
           if-no-files-found: error
           retention-days: 30

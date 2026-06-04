@@ -17,7 +17,7 @@ dist/
 
 # --- Wine cross-build: prefix, downloaded Python installer, fixtures ---
 wine-prefix/
-.wine-signapp/
+.wine-cachet/
 python-*-amd64.exe
 wine_in.pdf
 wine_sig.png

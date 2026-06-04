@@ -91,12 +91,12 @@ Code comments and CLI/GUI text are in English.
 | `--output <dir>` | output folder; files are written `{stem}_signe.pdf`, **never overwriting** (collisions get ` - 1`, ` - 2`, …). |
 | `--template <pdf>` | model PDF; if given, inputs are validated against it (CLI **and** GUI). |
 | `--mode beid\|image\|azure` | signature mode (default `beid`). |
-| `--azure-vault-url` / `--azure-key-name` / `--azure-key-name-template` / `--azure-cert-name` / `--azure-auth` / `--azure-trust-anchors` / `--azure-graph` | azure mode config; each falls back to its `SIGNAPP_AZURE_*` env var. Vault URL required; key derived per-user from the template (default `sig-{upn}`; explicit override flagged); auth `interactive`/`device-code` (CLI default)/`default` (CI only, breaks per-user model); trust anchors = internal CA PEM/DER file-or-dir, required when LTV/verification needs them. |
+| `--azure-vault-url` / `--azure-key-name` / `--azure-key-name-template` / `--azure-cert-name` / `--azure-auth` / `--azure-trust-anchors` / `--azure-graph` | azure mode config; each falls back to its `CACHET_AZURE_*` env var. Vault URL required; key derived per-user from the template (default `sig-{upn}`; explicit override flagged); auth `interactive`/`device-code` (CLI default)/`default` (CI only, breaks per-user model); trust anchors = internal CA PEM/DER file-or-dir, required when LTV/verification needs them. |
 | `--image-path <img>` | image to stamp (**required** for `--mode image`). |
 | `--page <N>` | target page, **1-based**. Image: insertion page. beID: vignette page (with `--x/--y`). |
 | `--x <pt> --y <pt>` | lower-left position, points from the page's bottom-left. Image: image corner. beID: vignette corner — **omit both → default bottom-right of last page**. |
 | `--pades-level {b-b,b-t,b-lt,b-lta}` | PAdES baseline level, **default `b-lta`**. b-t+ needs a TSA; b-lt+ embeds OCSP/CRL (LTV) using EU-trusted-list anchors. Never silently downgraded on network failure. |
-| `--timestamp-url` / `--trust-list-url` | RFC 3161 TSA and EU LOTL overrides. Precedence: flag > env (`SIGNAPP_TSA_URL` / `SIGNAPP_LOTL_URL`) > default (DigiCert free TSA / official EU LOTL). Free TSA = technically valid but NOT qualified timestamps. |
+| `--timestamp-url` / `--trust-list-url` | RFC 3161 TSA and EU LOTL overrides. Precedence: flag > env (`CACHET_TSA_URL` / `CACHET_LOTL_URL`) > default (DigiCert free TSA / official EU LOTL). Free TSA = technically valid but NOT qualified timestamps. |
 | `--digest {sha256,sha384,sha512}` | digest, pinned as `md_algorithm` (default sha256). |
 | `--no-verify` | skip post-signing self-verification (levels ≥ b-t); also skips the trusted-list fetch at b-t. |
 | `--refresh-trust-list` | bypass the 24 h LOTL cache. |
@@ -184,7 +184,7 @@ reused by the GUI canvas.
 
 ## GUI workflow (`gui.py`)
 
-`SignApp` (a `ctk.CTk`) lays the required steps top-to-bottom in a scrollable
+`CachetApp` (a `ctk.CTk`) lays the required steps top-to-bottom in a scrollable
 frame: (1) template, (2) files, (3) output, (4) **Validate** → pass/fail table,
 (5) mode (beid/image + **PAdES level selector**, default `b-lta`, + RRN privacy
 note), (6) **page + position** — shown for **both** modes
@@ -287,7 +287,7 @@ works here; recreating the venv requires redoing that (or the apt install).
   are unit-tested with stub credentials; NO test performs a real login —
   the real Entra+Key Vault path is the manual acceptance test in BUILD.md.
   Do not fake it into passing.
-- **GUI**: instantiate `gui.SignApp(args)`, drive its methods, call
+- **GUI**: instantiate `gui.CachetApp(args)`, drive its methods, call
   `app.update()`, and screenshot the window by id with ImageMagick
   (`import -window <hex winfo_id> shot.png`) on `DISPLAY=:0` — this catches real
   CustomTkinter API errors that `py_compile` cannot.
@@ -299,11 +299,11 @@ works here; recreating the venv requires redoing that (or the apt install).
 ## Packaging (standalone executables)
 
 PyInstaller builds **two onefile binaries** from one shared spec
-(`signApp.spec`), full details in **`BUILD.md`**:
+(`cachet.spec`), full details in **`BUILD.md`**:
 
-- **`signApp`** — windowed (`console=False`), entry `gui_main.py` (parses the
+- **`cachet`** — windowed (`console=False`), entry `gui_main.py` (parses the
   core arg parser then calls `gui.launch_gui`); double-click → GUI.
-- **`signApp-cli`** — console (`console=True`), entry `sign_pdfs_beid.py`;
+- **`cachet-cli`** — console (`console=True`), entry `sign_pdfs_beid.py`;
   headless, **excludes** tkinter/customtkinter to stay lean.
 
 Key spec facts (don't regress): no built-in PyInstaller hooks exist for

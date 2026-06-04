@@ -10,7 +10,7 @@ Persist this entire specification to `task-azure.md` at the repo root, then iter
 
 The repository has evolved (a previous loop implemented the B-LTA upgrade: `--pades-level {b-b,b-t,b-lt,b-lta}` default `b-lta`, RFC 3161 timestamping, `embed_validation_info`/`use_pades_lta`, a `trust.py` EU-LOTL trust provider, post-signing self-verification, an RRN warning, a pinned digest).
 
-**Before writing anything, use serena to read the current state** of `sign_pdfs_beid.py`, `gui.py`, `test_sign_pdfs_beid.py`, `requirements.txt`, `signApp.spec`, `README.md`, `CLAUDE.md`, `BUILD.md`. Map the real, current shapes of `RunConfig`, `sign_one()`, `process_batch()`, `build_arg_parser()`, `resolve_config()`, `validate_config()`, the verification helper, and the trust/validation-context plumbing. **This spec describes the target; the current code is the source of truth for how to get there.** If anything here contradicts the actual code, adapt and note it in `task-azure.md`.
+**Before writing anything, use serena to read the current state** of `sign_pdfs_beid.py`, `gui.py`, `test_sign_pdfs_beid.py`, `requirements.txt`, `cachet.spec`, `README.md`, `CLAUDE.md`, `BUILD.md`. Map the real, current shapes of `RunConfig`, `sign_one()`, `process_batch()`, `build_arg_parser()`, `resolve_config()`, `validate_config()`, the verification helper, and the trust/validation-context plumbing. **This spec describes the target; the current code is the source of truth for how to get there.** If anything here contradicts the actual code, adapt and note it in `task-azure.md`.
 
 ---
 
@@ -61,7 +61,7 @@ The repository has evolved (a previous loop implemented the B-LTA upgrade: `--pa
    - exposes `signing_cert` / `cert_registry` so pyHanko builds a correct CMS,
    - is import-safe without tkinter and unit-testable with the Azure SDK mocked.
 
-**R4 — Config & resolution.** Add CLI flags (each with a `SIGNAPP_AZURE_*` env var; flag > env > default):
+**R4 — Config & resolution.** Add CLI flags (each with a `CACHET_AZURE_*` env var; flag > env > default):
    - `--azure-vault-url` (required for `azure` mode),
    - `--azure-key-name` (explicit override) and `--azure-key-name-template` (default `sig-{upn}`),
    - `--azure-cert-name` (if the cert name differs from the key name),
@@ -97,7 +97,7 @@ The repository has evolved (a previous loop implemented the B-LTA upgrade: `--pa
 - **Validation-context helper**: refactor so the trust source is selected by mode (`beid` → EU-LOTL `trust.py`; `azure` → internal anchors).
 - **`gui.py`**: third mode + Azure panel + sign-in action (R10).
 - **`requirements.txt`**: pin `azure-identity`, `azure-keyvault-keys`, `azure-keyvault-certificates` (and confirm transitive `msal`, `azure-core`). If Graph is used, add the minimal client or call the REST endpoint directly.
-- **`signApp.spec`**: `azure` mode is **CLI-usable**, so add the Azure packages to the **common** collection (not GUI-only): `collect_all` for `azure`, `azure.identity`, `azure.keyvault.*`, `msal`, plus `copy_metadata` as needed; add any native/hidden imports. **Both** binaries must still build; do **not** exclude azure from the CLI binary.
+- **`cachet.spec`**: `azure` mode is **CLI-usable**, so add the Azure packages to the **common** collection (not GUI-only): `collect_all` for `azure`, `azure.identity`, `azure.keyvault.*`, `msal`, plus `copy_metadata` as needed; add any native/hidden imports. **Both** binaries must still build; do **not** exclude azure from the CLI binary.
 
 ---
 
@@ -135,7 +135,7 @@ Real Entra login + Key Vault signing + internal-CA LTV is a **manual acceptance 
 - [x] Post-signing self-verification runs for `azure` (internal-CA context), reports level/LTV in `DocResult.detail`, fails on mismatch; `--no-verify` skips.
 - [x] No silent level downgrade on network failure; failures name the endpoint/capability; `b-b`/`image` remain offline-capable.
 - [x] GUI third mode "Azure (Microsoft login)" with sign-in action and Azure panel; thread-safety invariants preserved.
-- [x] `requirements.txt` + `signApp.spec` updated; **both** binaries build; azure available in the CLI binary.
+- [x] `requirements.txt` + `cachet.spec` updated; **both** binaries build; azure available in the CLI binary.
 - [x] Tokens/keys never logged; only the digest leaves the machine; per-user key rule enforced.
 - [x] Docs (`README`/`CLAUDE`/`BUILD`) updated: new mode/flags, **AES-not-QES**, network + internal-CA trust requirements, per-user Key Vault prerequisite, eID-vs-Azure trade-off.
 - [x] `python -m unittest -v` green; `HeadlessImport` and the image-mode smoke path pass.
@@ -184,7 +184,7 @@ assumptions hold; how each target maps onto the real code:
 - **GUI**: step-5 row hosts the mode radios + level selector; the azure
   panel and sign-in action extend that step; worker-thread/queue/after()
   invariants unchanged.
-- **Spec/packaging**: signApp.spec collects common engine packages into BOTH
+- **Spec/packaging**: cachet.spec collects common engine packages into BOTH
   binaries via `common_*` lists — azure packages go there (CLI keeps azure).
 - Deviation note: the loop prompt says to record reconciliation notes "in
   task.md"; the spec's Mission says persist the spec to `task-azure.md`.

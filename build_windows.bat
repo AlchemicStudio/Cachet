@@ -1,8 +1,8 @@
 @echo off
 REM ===================================================================
 REM  Build of both WINDOWS executables, on a REAL Windows machine:
-REM    dist\signApp.exe       (windowed: double-click -> GUI)
-REM    dist\signApp-cli.exe   (console: batch signing/stamping)
+REM    dist\cachet.exe       (windowed: double-click -> GUI)
+REM    dist\cachet-cli.exe   (console: batch signing/stamping)
 REM
 REM  Prerequisites: Python 3.12, 3.13 or 3.14 (64-bit) installed, with
 REM  the "tcl/tk and IDLE" option checked (tkinter), and "py" or "python"
@@ -31,7 +31,7 @@ echo ^>^> Checking tkinter (required by the windowed binary)...
 python -c "import tkinter, _tkinter; print('   tkinter OK')" || echo    WARNING: tkinter missing -^> reinstall Python with "tcl/tk and IDLE" checked.
 
 echo ^>^> PyInstaller...
-python -m PyInstaller --noconfirm --clean signApp.spec
+python -m PyInstaller --noconfirm --clean cachet.spec
 if errorlevel 1 ( echo PyInstaller ERROR. & pause & exit /b 1 )
 
 echo.

@@ -53,11 +53,11 @@ from asn1crypto import x509
 from lxml import etree
 
 DEFAULT_LOTL_URL = "https://ec.europa.eu/tools/lotl/eu-lotl.xml"
-ENV_LOTL_URL = "SIGNAPP_LOTL_URL"
+ENV_LOTL_URL = "CACHET_LOTL_URL"
 DEFAULT_TERRITORY = "BE"
 DEFAULT_TTL = 24 * 3600  # seconds
 _HTTP_TIMEOUT = 30  # seconds per request
-_CACHE_APP_NAME = "signApp"
+_CACHE_APP_NAME = "cachet"
 
 _TSL_NS = "http://uri.etsi.org/02231/v2#"
 _ADDTYPES_NS = "http://uri.etsi.org/02231/v2/additionaltypes#"
@@ -75,7 +75,7 @@ class TrustListError(RuntimeError):
 
 
 def resolve_lotl_url(explicit: str | None = None) -> str:
-    """LOTL URL precedence: --trust-list-url flag > SIGNAPP_LOTL_URL > default."""
+    """LOTL URL precedence: --trust-list-url flag > CACHET_LOTL_URL > default."""
     return explicit or os.environ.get(ENV_LOTL_URL) or DEFAULT_LOTL_URL
 
 
@@ -151,7 +151,7 @@ def qualified_esig_ca_certs(tl_xml: bytes) -> list[bytes]:
 
 def _default_fetcher(url: str) -> bytes:
     resp = requests.get(
-        url, timeout=_HTTP_TIMEOUT, headers={"User-Agent": "signApp-trust/1.0"}
+        url, timeout=_HTTP_TIMEOUT, headers={"User-Agent": "cachet-trust/1.0"}
     )
     resp.raise_for_status()
     return resp.content
@@ -253,7 +253,7 @@ def get_trust_anchors(
             f"EU trusted list unreachable: {url} ({exc}). "
             "LTV signing (b-lt/b-lta) needs the EU LOTL at least once to seed "
             "the trust anchors; connect to the network, or pass "
-            "--trust-list-url / set SIGNAPP_LOTL_URL to a reachable mirror. "
+            "--trust-list-url / set CACHET_LOTL_URL to a reachable mirror. "
             "No valid local cache exists. The signature level is NOT "
             "downgraded automatically."
         ) from exc

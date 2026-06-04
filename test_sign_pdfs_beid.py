@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Headless tests (no card, no tkinter) for signApp.
+"""Headless tests (no card, no tkinter) for Cachet.
 
 Covers the added business logic: page dimension extraction, validation against
 the template, image insertion, placement math, and CLI argument resolution.
@@ -686,7 +686,7 @@ class GuiImageEndToEnd(unittest.TestCase):
         tpl = make_pdf(self.tmp / "t.pdf", [(595, 842), (595, 842)])
         png = make_png(self.tmp / "s.png")
         out = self.tmp / "out"
-        app = gui.SignApp(self.types.SimpleNamespace(lib=None))
+        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
         app.update()
         app.template_path = tpl
         app.template_dims = core.page_dimensions(tpl)
@@ -722,7 +722,7 @@ class GuiImageEndToEnd(unittest.TestCase):
         # open_eid_session() raises SystemExit (no reader/card); the worker
         # must catch it and publish an error, not die silently.
         import gui
-        app = gui.SignApp(self.types.SimpleNamespace(lib=None))
+        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
         app.update()
         app._result_q = __import__("queue").Queue()
 
@@ -758,7 +758,7 @@ class GuiBeidPlacement(unittest.TestCase):
     def test_beid_placeholder_and_resize(self):
         import gui
         tpl = make_pdf(self.tmp / "t.pdf", [(600, 800), (600, 800)])
-        app = gui.SignApp(self.types.SimpleNamespace(lib=None))
+        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
         app.geometry("900x950")
         app.update()
         app.template_path = tpl

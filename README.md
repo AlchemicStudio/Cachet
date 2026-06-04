@@ -1,4 +1,4 @@
-# signApp
+# Cachet
 
 Batch PDF signing for Belgian administrative workflows, usable from
 both a **command line** and a **CustomTkinter GUI**, with three modes:
@@ -133,8 +133,8 @@ python3 -m venv venv
 | `--page <N>` | target page, **1-based**. Image: insertion page. beID: vignette page. |
 | `--x <pt> --y <pt>` | lower-left corner, in points from the page's bottom-left. beID: **omit both ⇒ bottom-right of the last page**. |
 | `--pades-level <lvl>` | PAdES baseline level: `b-b`, `b-t`, `b-lt`, `b-lta` (**default `b-lta`**). See *Signature levels* below. |
-| `--timestamp-url <url>` | RFC 3161 TSA for levels ≥ b-t. Precedence: flag > `SIGNAPP_TSA_URL` env > `http://timestamp.digicert.com`. |
-| `--trust-list-url <url>` | EU LOTL URL seeding the LTV trust anchors. Precedence: flag > `SIGNAPP_LOTL_URL` env > the official EU URL. |
+| `--timestamp-url <url>` | RFC 3161 TSA for levels ≥ b-t. Precedence: flag > `CACHET_TSA_URL` env > `http://timestamp.digicert.com`. |
+| `--trust-list-url <url>` | EU LOTL URL seeding the LTV trust anchors. Precedence: flag > `CACHET_LOTL_URL` env > the official EU URL. |
 | `--refresh-trust-list` | force re-download of the EU trusted list (bypass the 24 h cache). |
 | `--digest <alg>` | signature digest: `sha256` (default), `sha384`, `sha512`. |
 | `--no-verify` | skip the post-signing self-verification (levels ≥ b-t). |
@@ -142,12 +142,12 @@ python3 -m venv venv
 | `--legacy-cms` | **deprecated**: legacy non-PAdES `adbe.pkcs7.detached` signature (no timestamp, no LTV). Incompatible with levels above b-b. |
 | `--lib <path>` | path to the eID PKCS#11 library (otherwise OS-default value). |
 | `--field <name>` | base name of the signature field (beid/azure modes). |
-| `--azure-vault-url <url>` | Key Vault URL (**required** in azure mode; env `SIGNAPP_AZURE_VAULT_URL`). |
-| `--azure-key-name <name>` | explicit key override — bypasses the per-user derivation and is **flagged** in the output (env `SIGNAPP_AZURE_KEY_NAME`). |
-| `--azure-key-name-template <tpl>` | per-user key derivation, default `sig-{upn}`; placeholders `{upn}`, `{upn_local}`, `{oid}`, sanitised to the Key Vault charset (env `SIGNAPP_AZURE_KEY_NAME_TEMPLATE`). |
-| `--azure-cert-name <name>` | certificate name if it differs from the key name (env `SIGNAPP_AZURE_CERT_NAME`). |
-| `--azure-auth <m>` | `interactive` (browser; GUI default), `device-code` (CLI default), `default` (`DefaultAzureCredential` — testing/CI only, **breaks the per-user model**). Env `SIGNAPP_AZURE_AUTH`. |
-| `--azure-trust-anchors <path>` | PEM/DER file or directory with the **internal CA chain** used as LTV trust anchors in azure mode (required for b-lt/b-lta and for self-verification at b-t). Env `SIGNAPP_AZURE_TRUST_ANCHORS`. |
+| `--azure-vault-url <url>` | Key Vault URL (**required** in azure mode; env `CACHET_AZURE_VAULT_URL`). |
+| `--azure-key-name <name>` | explicit key override — bypasses the per-user derivation and is **flagged** in the output (env `CACHET_AZURE_KEY_NAME`). |
+| `--azure-key-name-template <tpl>` | per-user key derivation, default `sig-{upn}`; placeholders `{upn}`, `{upn_local}`, `{oid}`, sanitised to the Key Vault charset (env `CACHET_AZURE_KEY_NAME_TEMPLATE`). |
+| `--azure-cert-name <name>` | certificate name if it differs from the key name (env `CACHET_AZURE_CERT_NAME`). |
+| `--azure-auth <m>` | `interactive` (browser; GUI default), `device-code` (CLI default), `default` (`DefaultAzureCredential` — testing/CI only, **breaks the per-user model**). Env `CACHET_AZURE_AUTH`. |
+| `--azure-trust-anchors <path>` | PEM/DER file or directory with the **internal CA chain** used as LTV trust anchors in azure mode (required for b-lt/b-lta and for self-verification at b-t). Env `CACHET_AZURE_TRUST_ANCHORS`. |
 | `--azure-graph` | opt-in: use the Microsoft Graph `/me` displayName for the vignette. |
 
 ### Signature levels (PAdES baseline, ETSI EN 319 142-1)
@@ -224,13 +224,13 @@ place) → **7.** launch → **8.** per-document summary.
 ## Standalone executables (Linux & Windows)
 
 The project compiles into **two standalone binaries** per OS (a windowed GUI
-`signApp`, a console CLI `signApp-cli`) — no Python required on the target
+`cachet`, a console CLI `cachet-cli`) — no Python required on the target
 machine. See **[BUILD.md](BUILD.md)** for all the routes (native Linux, native
 Windows, Wine, and GitHub Actions CI).
 
 ```bash
-./build_linux.sh        # Linux  -> dist/signApp , dist/signApp-cli
-build_windows.bat       # Windows -> dist\signApp.exe , dist\signApp-cli.exe
+./build_linux.sh        # Linux  -> dist/cachet , dist/cachet-cli
+build_windows.bat       # Windows -> dist\cachet.exe , dist\cachet-cli.exe
 ```
 
 The eID middleware remains a **runtime dependency** (beid mode) and is never
@@ -255,7 +255,7 @@ Headless `unittest` suite (no card, no tkinter):
 | `gui.py` | CustomTkinter interface (façade over the core). |
 | `gui_main.py` | entry point of the windowed binary (opens the GUI). |
 | `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py` | `unittest` test suites. |
-| `signApp.spec` | PyInstaller recipe (two binaries). |
+| `cachet.spec` | PyInstaller recipe (two binaries). |
 | `build_*.sh` / `build_windows.bat` | build scripts. |
 | `.github/workflows/build.yml` | CI: Windows + Linux binaries as artifacts. |
 | `BUILD.md` | detailed packaging guide. |
