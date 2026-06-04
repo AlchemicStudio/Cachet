@@ -95,6 +95,32 @@ common_hidden += collect_submodules("lxml")
 # customtkinter, which the CLI binary excludes).
 common_hidden += ["trust", "requests", "platformdirs"]
 
+# azure mode (Entra ID + Key Vault) is CLI-usable -> COMMON collection; do
+# NOT exclude azure from the CLI binary. No provided hooks for the azure
+# SDK (hooks-contrib only ships unrelated 'azurerm'), so collect_all the
+# dotted packages + metadata. azure_signer.py is imported lazily by the
+# core, like trust.py.
+for _pkg in (
+    "azure.core",
+    "azure.identity",
+    "azure.keyvault.keys",
+    "azure.keyvault.certificates",
+    "msal",
+    "msal_extensions",
+):
+    _add_all(_pkg, datas=common_datas, binaries=common_binaries, hidden=common_hidden)
+for _dist in (
+    "azure-core",
+    "azure-identity",
+    "azure-keyvault-keys",
+    "azure-keyvault-certificates",
+    "msal",
+    "msal-extensions",
+    "PyJWT",
+):
+    _meta(_dist, common_datas)
+common_hidden += ["azure_signer", "jwt"]
+
 # tzdata: ON WINDOWS ONLY. pyHanko timestamps the signature via tzlocal,
 # which builds a zoneinfo.ZoneInfo there — but Windows has no system zoneinfo
 # database, so the "tzdata" package must be bundled. On Linux/macOS the system

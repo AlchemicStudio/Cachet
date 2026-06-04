@@ -14,14 +14,28 @@ template, both from the **command line** and from a **graphical interface**
 
 ## Two signature modes
 
-| Mode | Card required | Nature | Output |
+| Mode | Requires | Nature | Output |
 |---|---|---|---|
-| **`beid`** | yes (reader + card + PIN per document) | **cryptographic** eID signature (pyHanko via the PKCS#11 middleware) | visible **vignette**: cardholder photo + "Signed by:" / name / date |
-| **`image`** | no | **image stamp** (this is *not* a cryptographic signature) | the supplied image, placed at a chosen position |
+| **`beid`** | reader + eID card + PIN per document | **cryptographic** eID signature (pyHanko via the PKCS#11 middleware) — *qualified*-grade (QES) | visible **vignette**: cardholder photo + "Signed by:" / name / date |
+| **`azure`** | Microsoft (Entra ID) login, one per batch + a personal key/cert in Azure Key Vault | **cryptographic** personal signature — **advanced (AES), not qualified** | visible **vignette**: "Signed by:" / name / date (no photo) |
+| **`image`** | nothing | **image stamp** (this is *not* a cryptographic signature) | the supplied image, placed at a chosen position |
 
-In both modes, the same vignette/image + page + position is applied to **all**
+In all modes, the same vignette/image + page + position is applied to **all**
 the documents in the batch — template validation guarantees the files are
 geometrically identical.
+
+### eID vs Azure — which one?
+
+- **`beid` (eID)** carries the strongest legal weight (qualified certificate,
+  legally equivalent to a handwritten signature) but needs the physical card,
+  a reader, and **one PIN entry per document**.
+- **`azure`** signs with the user's **personal certificate held in Azure Key
+  Vault** after **one interactive Microsoft login per batch** — far better
+  ergonomics for large batches, but the result is an **advanced** electronic
+  signature (AES): fine for internal documents; for documents relied upon by
+  external third parties, a publicly recognised (qualified) issuer would be
+  needed.
+- **`image`** is a visual stamp only — no cryptographic value.
 
 ## Template validation (`--template`)
 
@@ -45,6 +59,10 @@ overwritten**: on collision, ` - 1`, ` - 2`, … are appended.
   card**, and the **PC/SC** service (`pcscd`) running. The PIN is requested for
   **each** document. **Levels ≥ b-t additionally need network access** (TSA,
   EU trusted list, OCSP/CRL — see *Signature levels* below); `b-b` is offline.
+- **`azure` mode**: no hardware — outbound network to
+  `login.microsoftonline.com`, the Key Vault URL, the TSA (≥ b-t) and the
+  internal CA's CRL/OCSP (≥ b-lt); per-user keys provisioned in Key Vault
+  (see the azure section above).
 - **`image` mode**: nothing special — pure PDF stamping.
 - **Graphical interface**: `customtkinter` + a Python with `tkinter` and a
   display. The page preview (step 6) is rendered by **pypdfium2** (the
@@ -75,6 +93,12 @@ python3 -m venv venv
   --template ../pdfs/MODELE.pdf --input ../pdfs --output ../signes \
   --image-path signature.png --page 1 --x 360 --y 150
 
+# Azure mode (personal Key Vault certificate, one Microsoft login per batch):
+./venv/bin/python sign_pdfs_beid.py --mode azure \
+  --azure-vault-url https://myorg-sign.vault.azure.net \
+  --azure-trust-anchors ./internal-ca-chain.pem \
+  --input ../pdfs --output ../signes
+
 # Graphical interface:
 ./venv/bin/python sign_pdfs_beid.py --gui
 ```
@@ -100,7 +124,14 @@ python3 -m venv venv
 | `--pades` | **deprecated no-op** (PAdES is now the default); use `--pades-level`. |
 | `--legacy-cms` | **deprecated**: legacy non-PAdES `adbe.pkcs7.detached` signature (no timestamp, no LTV). Incompatible with levels above b-b. |
 | `--lib <path>` | path to the eID PKCS#11 library (otherwise OS-default value). |
-| `--field <name>` | base name of the signature field (beid mode). |
+| `--field <name>` | base name of the signature field (beid/azure modes). |
+| `--azure-vault-url <url>` | Key Vault URL (**required** in azure mode; env `SIGNAPP_AZURE_VAULT_URL`). |
+| `--azure-key-name <name>` | explicit key override — bypasses the per-user derivation and is **flagged** in the output (env `SIGNAPP_AZURE_KEY_NAME`). |
+| `--azure-key-name-template <tpl>` | per-user key derivation, default `sig-{upn}`; placeholders `{upn}`, `{upn_local}`, `{oid}`, sanitised to the Key Vault charset (env `SIGNAPP_AZURE_KEY_NAME_TEMPLATE`). |
+| `--azure-cert-name <name>` | certificate name if it differs from the key name (env `SIGNAPP_AZURE_CERT_NAME`). |
+| `--azure-auth <m>` | `interactive` (browser; GUI default), `device-code` (CLI default), `default` (`DefaultAzureCredential` — testing/CI only, **breaks the per-user model**). Env `SIGNAPP_AZURE_AUTH`. |
+| `--azure-trust-anchors <path>` | PEM/DER file or directory with the **internal CA chain** used as LTV trust anchors in azure mode (required for b-lt/b-lta and for self-verification at b-t). Env `SIGNAPP_AZURE_TRUST_ANCHORS`. |
+| `--azure-graph` | opt-in: use the Microsoft Graph `/me` displayName for the vignette. |
 
 ### Signature levels (PAdES baseline, ETSI EN 319 142-1)
 
@@ -133,6 +164,32 @@ python3 -m venv venv
   in every eID signature (it is part of the certificate). The CLI warns at
   startup and in the summary — mind how signed PDFs are distributed.
 
+### Azure mode (`--mode azure`) — personal AES from Key Vault
+
+- **What it is**: each user signs **in their own name** with their personal
+  certificate + non-exportable key held in **Azure Key Vault**, after an
+  interactive **Microsoft Entra ID** login (one per batch — not per document).
+  Only the document **digest** is sent to Azure; the document never leaves
+  the machine. The result is an **advanced electronic signature (AES)** —
+  appropriate for internal documents; it is *not* a qualified signature (QES).
+- **Prerequisite (Azure admin)**: provision, per user, a Key Vault key +
+  certificate issued by the organisation's internal CA (ADCS / Entra-issued),
+  named after the key template (default `sig-{upn}`, e.g.
+  `sig-jane-doe-example-org`), and grant each user `get` on certificates and
+  `sign` on their own key (access policy / RBAC). Provisioning itself is out
+  of scope for this tool.
+- **Per-user rule**: the key name is derived from the *signed-in* user's UPN,
+  so a user can only sign with their own key; an explicit `--azure-key-name`
+  bypass is visibly flagged, and Key Vault access policy remains the hard
+  authorization gate.
+- **Trust/LTV**: azure mode builds its validation context from the **internal
+  CA chain** (`--azure-trust-anchors`) — the EU trusted list is *not* used
+  here (it is eID-specific). For b-lt/b-lta the internal CA must publish
+  reachable **CRL/OCSP** endpoints, otherwise signing fails with a clear
+  error (never a silent downgrade).
+- **Network**: `login.microsoftonline.com`, the vault URL, the TSA (≥ b-t)
+  and the internal CA's CRL/OCSP endpoints (≥ b-lt) must be reachable.
+
 > Backward compatibility: the legacy positional form `inputs… output_folder`
 > is still accepted if `--input`/`--output` are absent.
 
@@ -140,7 +197,9 @@ python3 -m venv venv
 
 A vertical wizard walks through the flow: **1.** template → **2.** files →
 **3.** output folder → **4.** validation (pass/fail table) → **5.** mode
-(eID/image + PAdES level selector, default `b-lta`) → **6.** page + position (actual page preview, click to
+(eID/image/**Azure** + PAdES level selector, default `b-lta`; in Azure mode a
+panel offers the vault settings and a **"Sign in with Microsoft"** action) →
+**6.** page + position (actual page preview, click to
 place) → **7.** launch → **8.** per-document summary.
 
 ---
@@ -174,10 +233,11 @@ Headless `unittest` suite (no card, no tkinter):
 | File | Role |
 |---|---|
 | `sign_pdfs_beid.py` | core + CLI entry point (business logic, importable without tkinter). |
-| `trust.py` | EU trusted-list (LOTL) trust provider: anchors for LTV, with local cache. |
+| `trust.py` | EU trusted-list (LOTL) trust provider: anchors for LTV in beid mode, with local cache. |
+| `azure_signer.py` | azure mode: Entra ID login, per-user Key Vault key/cert resolution, pyHanko signer (digest-only signing). |
 | `gui.py` | CustomTkinter interface (façade over the core). |
 | `gui_main.py` | entry point of the windowed binary (opens the GUI). |
-| `test_sign_pdfs_beid.py`, `test_trust.py` | `unittest` test suites. |
+| `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py` | `unittest` test suites. |
 | `signApp.spec` | PyInstaller recipe (two binaries). |
 | `build_*.sh` / `build_windows.bat` | build scripts. |
 | `.github/workflows/build.yml` | CI: Windows + Linux binaries as artifacts. |

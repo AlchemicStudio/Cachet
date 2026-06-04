@@ -106,10 +106,17 @@ These components are loaded dynamically and **cannot** be packaged:
   - Also requires a **reader + inserted eID card** + the PC/SC service.
 - **Network endpoints** — PAdES levels ≥ `b-t` (the default is `b-lta`) reach
   out at signing time to the **RFC 3161 TSA** (`--timestamp-url`, default
-  DigiCert free TSA), the **EU trusted list** (LOTL, cached locally 24 h) and
-  the CAs' **OCSP/CRL** endpoints. Offline machines can only sign at
-  `--pades-level b-b` (or stamp images); on failure the app names the
-  unreachable endpoint and **never silently downgrades the level**.
+  DigiCert free TSA), the trust source — **EU trusted list** (LOTL, cached
+  locally 24 h) in beid mode, the **internal CA chain file** in azure mode —
+  and the CAs' **OCSP/CRL** endpoints. `azure` mode additionally needs
+  **`login.microsoftonline.com`** (Entra ID) and the **Key Vault URL**.
+  Offline machines can only sign at `--pades-level b-b` in beid mode (or
+  stamp images); on failure the app names the unreachable endpoint and
+  **never silently downgrades the level**.
+- **Azure per-user provisioning** (azure mode only) — each user needs a Key
+  Vault key + certificate (internal CA) named after the key template
+  (default `sig-{upn}`) and `sign`/`get` permissions; see README. This is an
+  Azure-admin prerequisite, not something the app creates.
 The GUI's **page preview** (step 6) is rendered by **pypdfium2** (PDFium engine
 **bundled** in the executable): nothing to install, on any OS.
 `poppler` (`pdftoppm`) is now only an **optional fallback** used only if it is
@@ -170,6 +177,29 @@ test on real hardware** before distribution:
 Reminder: with the default **free TSA** the timestamps are technically valid
 but **not qualified**; for eIDAS-qualified preservation, run the acceptance
 test against a **qualified TSA** (`--timestamp-url`).
+
+### Manual acceptance test — azure mode (real Entra ID + Key Vault)
+
+The Azure SDK is fully mocked in the unit tests; the real login/signing
+path must be validated manually against a provisioned tenant:
+
+1. Sign a PDF as a real user:
+   `--mode azure --azure-vault-url https://… --azure-trust-anchors chain.pem`
+   (defaults: device-code login, PAdES B-LTA). Exactly **one** login prompt
+   must appear for the whole batch.
+2. The summary must report `signed (Azure, <your-upn>) — PAdES-B-LTA, LTV ok`.
+3. In **Adobe Acrobat Reader**: signature valid, **"LTV enabled"**, and the
+   signer identity is the USER's certificate (their name, internal CA chain).
+4. Cross-check with
+   `pyhanko sign validate --pretty-print --ltv-profile pades-lta <signed.pdf>`
+   (point its trust at the internal CA chain).
+5. Negative check: pass `--azure-key-name <someone-else's key>` — the run
+   must print the override warning, and Key Vault must deny the `sign`
+   operation unless your account was explicitly granted it.
+
+Reminder: azure mode produces an **advanced** signature (AES) with the
+internal CA — appropriate for internal documents, not a qualified (QES)
+signature.
 
 ### Ongoing maintenance for B-LTA archives (follow-up)
 

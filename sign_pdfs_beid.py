@@ -1477,7 +1477,14 @@ def main() -> int:
     def progress(r: DocResult) -> None:
         print(f"  [{'OK' if r.ok else 'FAIL'}] {r.path.name} — {r.detail}")
 
-    results = process_batch(cfg, on_progress=progress)
+    try:
+        results = process_batch(cfg, on_progress=progress)
+    except RuntimeError as exc:
+        # Batch-level setup failures (trust.TrustListError, azure
+        # AzureSigningError, …): actionable message, no traceback, and the
+        # level is NEVER silently downgraded.
+        print(f"\nFATAL: {exc}", file=sys.stderr)
+        return 1
     print_summary(results, cfg.output, rrn_note=(cfg.mode == "beid"))
     return 0 if results and all(r.ok for r in results) else 2
 

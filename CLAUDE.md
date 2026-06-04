@@ -13,6 +13,11 @@ wraps the same logic as the headless CLI.
   name / date) bottom-right of the last page. Signatures are **PAdES,
   default level B-LTA** (timestamp + embedded revocation info + archival
   timestamp chain), selectable via `--pades-level`; levels ≥ b-t need network.
+- **`azure` mode** — personal **AES (advanced, not qualified)** signature with
+  the signed-in user's own certificate + non-exportable key in **Azure Key
+  Vault**, after ONE interactive Microsoft Entra ID login per batch. Only the
+  digest is sent to Azure. Reuses the PAdES level pipeline; LTV trust comes
+  from the **internal CA chain** (`--azure-trust-anchors`), NEVER the EU LOTL.
 - **`image` mode** — stamps a user-supplied image onto a chosen page at a chosen
   position. See the design note below: **image mode does NOT use the card** and
   is not a cryptographic signature; it is the alternative to `beid`.
@@ -33,8 +38,17 @@ Code comments and CLI/GUI text are in English.
   `ValidationContext` anchors; JSON cache under `platformdirs` (24 h TTL,
   `--refresh-trust-list`); raises actionable `TrustListError` offline.
   Import-safe without tkinter; network injectable (`fetcher=`) for tests.
-- `test_sign_pdfs_beid.py`, `test_trust.py` — headless `unittest` suites
-  (no card, no tkinter, no network).
+  **beid-mode only** (azure uses the internal CA instead).
+- `azure_signer.py` — azure mode: Entra credential factory + process-wide
+  cache (`get_cached_credential` — one login per batch, shared with the GUI
+  sign-in), token-claims user resolution (UPN/oid, decoded locally, never
+  logged), per-user key/cert name template (`sig-{upn}`, sanitised; explicit
+  override flagged), `AzureKeyVaultSigner` (pyHanko `Signer`: hashes locally,
+  sends ONLY the digest to `CryptographyClient.sign`, maps key type +
+  `--digest` to RS256/…/ES256/…, converts ECDSA r||s → DER). Azure SDK
+  imports are lazy; clients injectable for tests.
+- `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py` — headless
+  `unittest` suites (no card, no tkinter, no network).
 - `pdfs/` (`../pdfs`), `signes/` (`../signes`) — sample inputs / output dir.
 - `venv/` — Python 3.14 virtualenv.
 
@@ -46,6 +60,12 @@ Code comments and CLI/GUI text are in English.
 
 # eID signing, offline basic level; legacy positional form (still supported)
 ./venv/bin/python sign_pdfs_beid.py ../pdfs ../signes --pades-level b-b
+
+# azure mode (personal Key Vault cert; one Microsoft login per batch):
+./venv/bin/python sign_pdfs_beid.py --mode azure \
+  --azure-vault-url https://myorg-sign.vault.azure.net \
+  --azure-trust-anchors ./internal-ca-chain.pem \
+  --input ../pdfs --output ../signes
 
 # image stamp (no card), with template validation:
 ./venv/bin/python sign_pdfs_beid.py --mode image \
@@ -59,7 +79,7 @@ Code comments and CLI/GUI text are in English.
 ./venv/bin/python -m unittest -v
 
 # Syntax check everything:
-./venv/bin/python -m py_compile sign_pdfs_beid.py gui.py trust.py test_sign_pdfs_beid.py test_trust.py
+./venv/bin/python -m py_compile sign_pdfs_beid.py gui.py trust.py azure_signer.py test_sign_pdfs_beid.py test_trust.py test_azure.py
 ```
 
 ### CLI flags
@@ -70,7 +90,8 @@ Code comments and CLI/GUI text are in English.
 | `--input <path…>` | files and/or directories to process (dirs are globbed for `*.pdf`). |
 | `--output <dir>` | output folder; files are written `{stem}_signe.pdf`, **never overwriting** (collisions get ` - 1`, ` - 2`, …). |
 | `--template <pdf>` | model PDF; if given, inputs are validated against it (CLI **and** GUI). |
-| `--mode beid\|image` | signature mode (default `beid`). |
+| `--mode beid\|image\|azure` | signature mode (default `beid`). |
+| `--azure-vault-url` / `--azure-key-name` / `--azure-key-name-template` / `--azure-cert-name` / `--azure-auth` / `--azure-trust-anchors` / `--azure-graph` | azure mode config; each falls back to its `SIGNAPP_AZURE_*` env var. Vault URL required; key derived per-user from the template (default `sig-{upn}`; explicit override flagged); auth `interactive`/`device-code` (CLI default)/`default` (CI only, breaks per-user model); trust anchors = internal CA PEM/DER file-or-dir, required when LTV/verification needs them. |
 | `--image-path <img>` | image to stamp (**required** for `--mode image`). |
 | `--page <N>` | target page, **1-based**. Image: insertion page. beID: vignette page (with `--x/--y`). |
 | `--x <pt> --y <pt>` | lower-left position, points from the page's bottom-left. Image: image corner. beID: vignette corner — **omit both → default bottom-right of last page**. |
@@ -95,10 +116,16 @@ Both the CLI (`main`) and the GUI call `process_batch(cfg: RunConfig, on_progres
 2. For `beid` mode, open **one** PKCS#11 session, build `BEIDSigner`, read the
    identity once (no PIN), and build the network material once via
    `build_signing_material(cfg)` → `SigningMaterial` (an `HTTPTimeStamper`
-   for levels ≥ b-t; EU-trusted-list anchors + a fetching `ValidationContext`
-   for b-lt/b-lta — anchors are passed as `extra_trust_roots` because pyHanko
-   validates the TSA chain against the same context). A `TrustListError`
-   here fails the whole batch — the level is NEVER silently downgraded.
+   for levels ≥ b-t; trust anchors + a fetching `ValidationContext` for
+   b-lt/b-lta — anchors are passed as `extra_trust_roots` because pyHanko
+   validates the TSA chain against the same context). The trust source is
+   **mode-dependent**: beid → EU LOTL (`trust.py`); azure → internal CA
+   (`load_trust_anchor_certs`). A `TrustListError`/`ValueError` here fails
+   the whole batch — the level is NEVER silently downgraded.
+   For `azure` mode the setup-once path is: `get_cached_credential` →
+   `acquire_user` (ONE login per batch) → `resolve_key_names` →
+   `build_azure_signer` → `read_cert_identity` (vignette name from the cert
+   subject or Graph displayName; `photo=None`).
 3. Per input: validate against the template (if any) → reject+report on failure;
    else `sign_one()` (beid) or `insert_image_one()` (image). Returns a
    `DocResult` per file (`ok`, `detail`). `on_progress` fires per document so
@@ -220,6 +247,10 @@ national register number is embedded in every signature — mind PDF distributio
   needs hardware + a human and cannot be exercised headlessly. Levels ≥ b-t
   (default b-lta) additionally need **network**: TSA, EU trusted list
   (cached 24 h) and OCSP/CRL endpoints; `--pades-level b-b` is offline.
+- **azure mode**: no hardware; outbound network to `login.microsoftonline.com`,
+  the vault URL, the TSA (≥ b-t) and the internal CA's CRL/OCSP (≥ b-lt);
+  per-user Key Vault key/cert provisioned by an Azure admin (README). Tokens
+  and key material are never logged; only the digest leaves the machine.
 - **image mode**: nothing special — pure PDF stamping, fully testable headless.
 - **GUI**: `customtkinter` (pip) **and** a Python with `tkinter` + a display.
   The step-6 page preview is rendered by **pypdfium2** (bundled PDFium, no
@@ -249,6 +280,13 @@ works here; recreating the venv requires redoing that (or the apt install).
 - **trust.py**: `test_trust.py` covers LOTL parsing, cert filtering, cache,
   TTL, refresh and offline errors with the network mocked (`fetcher=`); a
   live run against the real LOTL takes ~1 s if you need to sanity-check.
+- **azure mode**: `test_azure.py` mocks ONLY the Azure transport — the fake
+  `CryptographyClient` really signs the digest with a local key, so RSA/EC
+  signatures flow through pyHanko + `verify_signed_pdf` end-to-end (incl.
+  the r||s→DER conversion). Auth/claims/key-template/material/batch wiring
+  are unit-tested with stub credentials; NO test performs a real login —
+  the real Entra+Key Vault path is the manual acceptance test in BUILD.md.
+  Do not fake it into passing.
 - **GUI**: instantiate `gui.SignApp(args)`, drive its methods, call
   `app.update()`, and screenshot the window by id with ImageMagick
   (`import -window <hex winfo_id> shot.png`) on `DISPLAY=:0` — this catches real
@@ -278,7 +316,11 @@ timestamps need a zoneinfo there). `upx=False` (UPX can corrupt crypto libs).
 The eID middleware (`libbeidpkcs11.so`/`beidpkcs11.dll`) is a **runtime dep,
 never bundled**. The page preview uses **pypdfium2** (bundled in the GUI binary
 via the contrib hooks; excluded from the CLI binary), so poppler is no longer
-required — only an optional fallback.
+required — only an optional fallback. The Azure SDK
+(`azure.core`/`azure.identity`/`azure.keyvault.*`/`msal`/`msal_extensions`)
+has no provided hooks either → `collect_all`'d + metadata into the **common**
+collection, and `azure_signer`/`jwt` are explicit hiddenimports — azure mode
+must stay available in the **CLI** binary (do NOT add azure to CLI_EXCLUDES).
 
 Build routes: `./build_linux.sh` (native), `build_windows.bat` (real Windows),
 `./build_windows_wine.sh` (Linux→Windows via Wine, best-effort), and
