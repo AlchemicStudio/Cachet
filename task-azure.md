@@ -125,20 +125,20 @@ Real Entra login + Key Vault signing + internal-CA LTV is a **manual acceptance 
 
 # 9. Acceptance criteria (the loop drives to all-checked)
 
-- [ ] `--mode azure` exists alongside `beid`/`image`; both existing modes unchanged and still pass their tests.
-- [ ] Interactive Entra ID login (`--azure-auth interactive|device-code|default`); token cached; **one login per batch**, no per-document prompt.
-- [ ] Signed-in user's UPN/oid resolved from token claims (or Graph); Key Vault key/cert resolved via `--azure-key-name-template` (default `sig-{upn}`) or explicit override, with the per-user safety rule enforced.
-- [ ] `azure_signer.py` signs the digest via Key Vault `CryptographyClient` (correct `SignatureAlgorithm` per key type + `--digest`), builds the CMS from the Key Vault certificate + chain; document never sent to Azure.
-- [ ] `--pades-level` honoured in `azure` mode (timestamp ≥ b-t; internal-CA `ValidationContext` + `embed_validation_info` for b-lt/b-lta; `use_pades_lta` for b-lta).
-- [ ] Validation/trust is **mode-dependent**: `azure` uses `--azure-trust-anchors` (internal CA); `beid` still uses the EU-LOTL `trust.py`.
-- [ ] Visible vignette in `azure` mode shows the user's name from the certificate (or Graph), `photo=None`; placement flags work; default bottom-right last page.
-- [ ] Post-signing self-verification runs for `azure` (internal-CA context), reports level/LTV in `DocResult.detail`, fails on mismatch; `--no-verify` skips.
-- [ ] No silent level downgrade on network failure; failures name the endpoint/capability; `b-b`/`image` remain offline-capable.
-- [ ] GUI third mode "Azure (Microsoft login)" with sign-in action and Azure panel; thread-safety invariants preserved.
-- [ ] `requirements.txt` + `signApp.spec` updated; **both** binaries build; azure available in the CLI binary.
-- [ ] Tokens/keys never logged; only the digest leaves the machine; per-user key rule enforced.
-- [ ] Docs (`README`/`CLAUDE`/`BUILD`) updated: new mode/flags, **AES-not-QES**, network + internal-CA trust requirements, per-user Key Vault prerequisite, eID-vs-Azure trade-off.
-- [ ] `python -m unittest -v` green; `HeadlessImport` and the image-mode smoke path pass.
+- [x] `--mode azure` exists alongside `beid`/`image`; both existing modes unchanged and still pass their tests.
+- [x] Interactive Entra ID login (`--azure-auth interactive|device-code|default`); token cached; **one login per batch**, no per-document prompt.
+- [x] Signed-in user's UPN/oid resolved from token claims (or Graph); Key Vault key/cert resolved via `--azure-key-name-template` (default `sig-{upn}`) or explicit override, with the per-user safety rule enforced.
+- [x] `azure_signer.py` signs the digest via Key Vault `CryptographyClient` (correct `SignatureAlgorithm` per key type + `--digest`), builds the CMS from the Key Vault certificate + chain; document never sent to Azure.
+- [x] `--pades-level` honoured in `azure` mode (timestamp ≥ b-t; internal-CA `ValidationContext` + `embed_validation_info` for b-lt/b-lta; `use_pades_lta` for b-lta).
+- [x] Validation/trust is **mode-dependent**: `azure` uses `--azure-trust-anchors` (internal CA); `beid` still uses the EU-LOTL `trust.py`.
+- [x] Visible vignette in `azure` mode shows the user's name from the certificate (or Graph), `photo=None`; placement flags work; default bottom-right last page.
+- [x] Post-signing self-verification runs for `azure` (internal-CA context), reports level/LTV in `DocResult.detail`, fails on mismatch; `--no-verify` skips.
+- [x] No silent level downgrade on network failure; failures name the endpoint/capability; `b-b`/`image` remain offline-capable.
+- [x] GUI third mode "Azure (Microsoft login)" with sign-in action and Azure panel; thread-safety invariants preserved.
+- [x] `requirements.txt` + `signApp.spec` updated; **both** binaries build; azure available in the CLI binary.
+- [x] Tokens/keys never logged; only the digest leaves the machine; per-user key rule enforced.
+- [x] Docs (`README`/`CLAUDE`/`BUILD`) updated: new mode/flags, **AES-not-QES**, network + internal-CA trust requirements, per-user Key Vault prerequisite, eID-vs-Azure trade-off.
+- [x] `python -m unittest -v` green; `HeadlessImport` and the image-mode smoke path pass.
 
 ---
 
