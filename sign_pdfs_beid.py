@@ -996,7 +996,7 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
     return results
 
 
-def print_summary(results: list[DocResult], out_dir) -> None:
+def print_summary(results: list[DocResult], out_dir, *, rrn_note: bool = False) -> None:
     """Print a summary table of the batch."""
     print("\n=== Summary ===")
     width = max((len(r.path.name) for r in results), default=8)
@@ -1005,6 +1005,10 @@ def print_summary(results: list[DocResult], out_dir) -> None:
         print(f"  [{flag}] {r.path.name:<{width}}  {r.detail}")
     ok = sum(1 for r in results if r.ok)
     print(f"\n{ok}/{len(results)} document(s) processed successfully. Output: {out_dir}")
+    if rrn_note:
+        # R9: repeat the privacy implication in the final summary.
+        print("Note: eID signatures embed the signer's national register "
+              "number (RRN); mind how the signed PDFs are distributed.")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -1198,6 +1202,12 @@ def main() -> int:
         where = (f"vignette page {cfg.page or 1} @ ({cfg.x:.0f}, {cfg.y:.0f})"
                  if placed else "vignette bottom-right, last page")
         print(f"Mode: eID — {where}. PKCS#11 lib: {lib_path}")
+        # R9: the RRN is in the signing certificate, hence in every signature.
+        print(
+            "WARNING: each eID signature embeds the signer's national "
+            "register number (RRN) — mind how the signed PDFs are distributed.",
+            file=sys.stderr,
+        )
         label = signature_level_label(cfg.pades_level, cfg.legacy_cms)
         print(f"Signature level: {label} — digest {cfg.digest}")
         if not cfg.legacy_cms and level_needs_timestamp(cfg.pades_level):
@@ -1221,7 +1231,7 @@ def main() -> int:
         print(f"  [{'OK' if r.ok else 'FAIL'}] {r.path.name} — {r.detail}")
 
     results = process_batch(cfg, on_progress=progress)
-    print_summary(results, cfg.output)
+    print_summary(results, cfg.output, rrn_note=(cfg.mode == "beid"))
     return 0 if results and all(r.ok for r in results) else 2
 
 

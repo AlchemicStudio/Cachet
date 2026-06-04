@@ -110,6 +110,10 @@ class SignApp(ctk.CTk):
         ctk.CTkLabel(row, text="PAdES level:").pack(side="left", padx=(16, 4))
         ctk.CTkOptionMenu(row, variable=self.pades_level_var,
                           values=list(core.PADES_LEVELS), width=110).pack(side="left")
+        # R9: surface the RRN privacy implication of eID signatures.
+        ctk.CTkLabel(root, text="⚠ eID signatures embed the signer's national "
+                                "register number (RRN) — mind PDF distribution.",
+                     text_color=("gray25", "gray70")).pack(anchor="w")
 
         # 6. page + position (BOTH modes; the image choice appears only in image mode)
         self.image_section = ctk.CTkFrame(root)

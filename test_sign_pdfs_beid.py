@@ -645,6 +645,23 @@ class SelfVerification(TmpCase):
             self._verify(dst, "b-b")
 
 
+class SummaryOutput(unittest.TestCase):
+    def _capture(self, **kw):
+        import contextlib, io
+        buf = io.StringIO()
+        results = [core.DocResult(Path("a.pdf"), Path("out/a_signe.pdf"), True,
+                                  "signed (eID) — vignette — PAdES-B-LTA, LTV ok")]
+        with contextlib.redirect_stdout(buf):
+            core.print_summary(results, "out", **kw)
+        return buf.getvalue()
+
+    def test_rrn_note_in_beid_summary(self):
+        self.assertIn("national register number", self._capture(rrn_note=True))
+
+    def test_no_rrn_note_otherwise(self):
+        self.assertNotIn("national register number", self._capture())
+
+
 class GuiImageEndToEnd(unittest.TestCase):
     """Regression: GUI launch → thread → queue → table path (image mode).
 
