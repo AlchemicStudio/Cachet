@@ -1,9 +1,26 @@
 # signApp
 
-**Batch** signing of PDF files with the **Belgian electronic identity card
-(eID)**, or stamping of a signature **image** — with input validation against a
-template, both from the **command line** and from a **graphical interface**
-(CustomTkinter).
+Batch PDF signing for Belgian police/administrative workflows, usable from
+both a **command line** and a **CustomTkinter GUI**, with three modes:
+
+- **`beid`** — qualified (QES-grade) cryptographic signatures with the Belgian
+  eID card via PKCS#11, stamping a visible vignette (cardholder photo + name +
+  date) on each document. One PIN entry per document.
+- **`azure`** — personal *advanced* (AES) signatures with the user's own
+  certificate held in Azure Key Vault, after a single Microsoft Entra ID login
+  per batch; only the document digest ever leaves the machine.
+- **`image`** — a simple image stamp (no cryptographic value).
+
+Signatures are **PAdES up to B-LTA** by default: trusted RFC 3161 timestamp,
+embedded revocation info (LTV), and an archival timestamp chain — with trust
+anchors drawn from the EU Trusted List (eID) or the organisation's internal CA
+(Azure). Every signed file is re-validated on the spot and the achieved level
+is reported; levels are never silently downgraded.
+
+Batches are validated against a template PDF (exact page count + dimensions)
+before signing, outputs never overwrite existing files, and the whole thing
+ships as two standalone PyInstaller binaries (windowed GUI + headless CLI) for
+Linux and Windows.
 
 > ⚖️ The eID mode uses the card's **non-repudiation** certificate, legally
 > equivalent to a handwritten signature. The **national register number** is
@@ -12,7 +29,7 @@ template, both from the **command line** and from a **graphical interface**
 
 ---
 
-## Two signature modes
+## The three modes
 
 | Mode | Requires | Nature | Output |
 |---|---|---|---|
