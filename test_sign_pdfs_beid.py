@@ -97,6 +97,35 @@ class Validation(TmpCase):
         results = core.validate_files(self.tpl, [good, bad])
         self.assertEqual([r.ok for r in results], [True, False])
 
+    def test_anchor_accepts_count_mismatch_when_anchor_page_matches(self):
+        dims = core.page_dimensions(self.tpl)
+        fewer = make_pdf(self.p("fewer.pdf"), [(595, 842)])
+        more = make_pdf(self.p("more.pdf"), [(595, 842), (595, 842), (595, 842)])
+        for pdf in (fewer, more):
+            for anchor in ("first", "last"):
+                r = core.validate_against_template(dims, pdf, page_anchor=anchor)
+                self.assertTrue(r.ok, r.reason)
+                self.assertIn(anchor, r.reason)     # informative detail for the tables
+
+    def test_anchor_rejects_when_anchor_page_differs(self):
+        dims = core.page_dimensions(self.tpl)
+        # 3 pages, odd LAST page: fine for "first", rejected for "last"
+        odd_last = make_pdf(self.p("odd_last.pdf"),
+                            [(595, 842), (595, 842), (200, 200)])
+        self.assertTrue(
+            core.validate_against_template(dims, odd_last, page_anchor="first").ok)
+        r = core.validate_against_template(dims, odd_last, page_anchor="last")
+        self.assertFalse(r.ok)
+        self.assertIn("last page", r.reason)
+
+    def test_anchor_keeps_strict_check_for_same_page_count(self):
+        dims = core.page_dimensions(self.tpl)
+        # same page count, mismatch NOT on the anchor page → still rejected
+        off = make_pdf(self.p("off1.pdf"), [(596, 842), (595, 842)])
+        r = core.validate_against_template(dims, off, page_anchor="last")
+        self.assertFalse(r.ok)
+        self.assertIn("page 1", r.reason)
+
 
 class ImageInsertion(TmpCase):
     def test_insert_preserves_pages_and_writes_output(self):
@@ -165,6 +194,25 @@ class BatchImageMode(TmpCase):
         self.assertFalse((outdir / "bad_signe.pdf").exists())     # rejected → no output
         self.assertEqual(len(seen), 2)                            # per-doc progress
 
+    def test_anchor_signs_count_mismatches_on_their_last_page(self):
+        tpl = make_pdf(self.p("tpl.pdf"), [(595, 842), (595, 842)])
+        short = make_pdf(self.p("short.pdf"), [(595, 842)])       # 1 page vs 2
+        long_bad = make_pdf(self.p("long_bad.pdf"),               # last page differs
+                            [(595, 842), (595, 842), (200, 200)])
+        png = make_png(self.p("sig.png"))
+        outdir = self.p("out")
+        cfg = core.RunConfig(inputs=[short, long_bad], output=outdir, mode="image",
+                             template=tpl, image_path=png,
+                             page_anchor="last", x=10, y=10)
+        results = core.process_batch(cfg)
+        by_name = {r.path.name: r for r in results}
+        self.assertTrue(by_name["short.pdf"].ok)
+        self.assertIn("last page", by_name["short.pdf"].detail)
+        self.assertFalse(by_name["long_bad.pdf"].ok)              # anchor page ≠ template's
+        self.assertIn("rejected", by_name["long_bad.pdf"].detail)
+        self.assertTrue((outdir / "short_signe.pdf").exists())
+        self.assertFalse((outdir / "long_bad_signe.pdf").exists())
+
 
 class BatchBeidWiring(TmpCase):
     """beid vignette placement wiring (no card: sign_one is mocked)."""
@@ -203,8 +251,29 @@ class BatchBeidWiring(TmpCase):
         cfg = core.RunConfig(inputs=[src], output=self.p("o"), mode="beid")  # no x/y
         calls, _ = self._run(cfg)
         (_, kw) = calls[0]
-        self.assertIsNone(kw.get("page_index"))            # -> _last_page_box / on_page=-1
+        self.assertIsNone(kw.get("page_index"))            # -> default box on the last page
         self.assertIsNone(kw.get("pos"))
+
+    def test_anchor_resolves_page_per_document(self):
+        src = make_pdf(self.p("d.pdf"), [(595, 842), (595, 842)])
+        cfg = core.RunConfig(inputs=[src], output=self.p("o"), mode="beid",
+                             page_anchor="first", x=30, y=40)
+        calls, results = self._run(cfg)
+        self.assertTrue(results[0].ok)
+        (_, kw) = calls[0]
+        self.assertEqual(kw.get("page_index"), 0)          # "first" -> index 0
+        self.assertEqual(kw.get("pos"), (30.0, 40.0))
+        self.assertIn("first page", results[0].detail)
+
+    def test_anchor_without_position_moves_default_vignette(self):
+        src = make_pdf(self.p("d.pdf"), [(595, 842), (595, 842)])
+        cfg = core.RunConfig(inputs=[src], output=self.p("o"), mode="beid",
+                             page_anchor="first")          # no x/y
+        calls, results = self._run(cfg)
+        (_, kw) = calls[0]
+        self.assertEqual(kw.get("page_index"), 0)          # corner box, first page
+        self.assertIsNone(kw.get("pos"))
+        self.assertIn("first page", results[0].detail)
 
 
 class OutputNaming(TmpCase):
@@ -234,6 +303,23 @@ class VignetteGeometry(unittest.TestCase):
             w, h = core.vignette_size_pt(page_w)
             self.assertAlmostEqual(w, page_w / 5)        # width = 1/5 of the page
             self.assertAlmostEqual(w / h, 3.0)           # 3:1 landscape ratio
+
+
+class DefaultVignetteBox(TmpCase):
+    def test_box_anchors_to_requested_page(self):
+        # two pages of different sizes: the default bottom-right box must
+        # follow the page it is asked for (anchor first/last support)
+        pdf = make_pdf(self.p("d.pdf"), [(400, 600), (800, 900)])
+        with open(pdf, "rb") as f:
+            w = core.IncrementalPdfFileWriter(f, strict=False)
+            first = core._default_vignette_box(w, 0)
+            last = core._default_vignette_box(w, -1)
+        self.assertAlmostEqual(first[2], 400 - core._STAMP_MARGIN)  # right edge
+        self.assertAlmostEqual(last[2], 800 - core._STAMP_MARGIN)
+
+    def test_anchor_page_index(self):
+        self.assertEqual(core.anchor_page_index("first"), 0)
+        self.assertEqual(core.anchor_page_index("last"), -1)
 
 
 class PageRender(TmpCase):
@@ -320,6 +406,20 @@ class ArgResolution(TmpCase):
         with self.assertRaises(ValueError):
             core.resolve_config(_Args(input=[str(self.a)], output=str(self.tmp),
                                       template=str(self.tmp / "nope.pdf")))
+
+    def test_page_anchor_resolution(self):
+        cfg = core.resolve_config(_Args(input=[str(self.a)], output=str(self.tmp),
+                                        page="last"))
+        self.assertIsNone(cfg.page)
+        self.assertEqual(cfg.page_anchor, "last")
+
+    def test_page_anchor_config_rules(self):
+        with self.assertRaises(ValueError):    # page and anchor are exclusive
+            core.validate_config(core.RunConfig(inputs=[self.a], output=self.tmp,
+                                                page=2, page_anchor="last"))
+        with self.assertRaises(ValueError):    # only first|last are anchors
+            core.validate_config(core.RunConfig(inputs=[self.a], output=self.tmp,
+                                                page_anchor="middle"))
 
 
 class LevelMapping(unittest.TestCase):
@@ -428,6 +528,20 @@ class NewFlagParsing(TmpCase):
 
     def test_digest_flag(self):
         self.assertEqual(self.parse("--digest", "sha512").digest, "sha512")
+
+    def test_page_flag_number_or_anchor(self):
+        cfg = self.parse("--page", "3")
+        self.assertEqual((cfg.page, cfg.page_anchor), (3, None))
+        cfg = self.parse("--page", "first")
+        self.assertEqual((cfg.page, cfg.page_anchor), (None, "first"))
+        cfg = self.parse("--page", "LAST")                  # case-insensitive
+        self.assertEqual((cfg.page, cfg.page_anchor), (None, "last"))
+
+    def test_page_flag_rejects_garbage(self):
+        import contextlib, io
+        with self.assertRaises(SystemExit), \
+                contextlib.redirect_stderr(io.StringIO()):
+            core.build_arg_parser().parse_args(["--page", "banana"])
 
     def test_no_verify_flag(self):
         self.assertFalse(self.parse("--no-verify").verify)
@@ -792,6 +906,85 @@ class GuiBeidPlacement(unittest.TestCase):
         small = app.canvas.winfo_reqwidth()
         app.destroy()
         self.assertLess(small, big)
+
+
+class GuiPageAnchor(unittest.TestCase):
+    """Step-4 first/last selector: appears only when some files' page count
+    differs from the template, locks the step-6 preview onto that template
+    page, and the batch signs those files on their own first/last page.
+    Skipped without a display."""
+
+    def setUp(self):
+        import types
+        try:
+            import tkinter
+            tkinter.Tk().destroy()
+            import gui  # noqa: F401
+        except Exception as exc:  # noqa: BLE001
+            self.skipTest(f"tkinter/GUI unavailable: {exc}")
+        self.types = types
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def test_selector_hidden_without_mismatch(self):
+        import gui
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
+        same = make_pdf(self.tmp / "same.pdf", [(595, 842)])
+        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
+        app.update()
+        app.template_path = tpl
+        app.template_dims = core.page_dimensions(tpl)
+        app.input_paths = [same]
+        app.output_dir = self.tmp / "o"
+        app._validate()
+        manager = app.anchor_row.winfo_manager()
+        anchor = app._page_anchor()
+        app.destroy()
+        self.assertEqual(manager, "")                 # selector not shown
+        self.assertIsNone(anchor)
+
+    def test_selector_locks_page_and_signs_short_file(self):
+        import time
+        import gui
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842), (595, 842)])
+        short = make_pdf(self.tmp / "short.pdf", [(595, 842)])    # 1 page vs 2
+        png = make_png(self.tmp / "s.png")
+        out = self.tmp / "out"
+        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
+        app.update()
+        app.template_path = tpl
+        app.template_dims = core.page_dimensions(tpl)
+        app.input_paths = [short]
+        app.output_dir = out
+        app._validate()
+        app.update()
+        self.assertNotEqual(app.anchor_row.winfo_manager(), "")   # selector shown
+        self.assertEqual(app.valid_paths, [short])                # accepted
+        self.assertEqual(app.cur_page, 1)     # locked on the template's LAST page
+        app.anchor_choice_var.set("first page")   # switch the anchor
+        app._validate()                           # (menu command re-validates)
+        self.assertEqual(app.cur_page, 0)
+        app._turn_page(1)                         # navigation is locked
+        self.assertEqual(app.cur_page, 0)
+        # end-to-end in image mode: the 1-page file gets signed on page 1
+        app.mode_var.set("image")
+        app._refresh_placement_section()
+        app.image_path = png
+        app._draw_page()
+        app.update()
+        fw, fh, ox, oy = app._frame_geom
+        app._on_canvas_click(self.types.SimpleNamespace(x=ox + fw * 0.5, y=oy + fh * 0.5))
+        app._launch()
+        for _ in range(120):                      # pump the Tk loop (max ~6 s)
+            app.update()
+            time.sleep(0.05)
+            if app.status_lbl.cget("text").startswith(("Done", "Error")):
+                break
+        status = app.status_lbl.cget("text")
+        n_rows = len(app.summary_table.get_children())
+        app.destroy()
+        self.assertTrue(status.startswith("Done"), status)
+        self.assertEqual(n_rows, 1)
+        self.assertTrue((out / "short_signe.pdf").exists())
 
 
 class HeadlessImport(unittest.TestCase):

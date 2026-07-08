@@ -297,6 +297,10 @@ TEMPLATE VALIDATION
 An optional safety check: before signing, every input PDF is compared to a model
 ("template") and must have the same page count and identical page sizes. This
 guarantees the signature lands in the right spot on every file in the batch.
+When some files have a DIFFERENT page count (e.g. scanned annexes were added),
+a selector appears in step 4: every file is then signed on its own first or
+last page — that page must still have exactly the template's page size, so the
+position you pick in step 6 is guaranteed to fit.
 
 B-LTA RENEWAL
 B-LTA (the default level) adds an archival timestamp chain so the evidence stays
@@ -336,6 +340,12 @@ class CachetApp(ctk.CTk):
         self.output_dir: Path | None = None
         self.mode_var = ctk.StringVar(value="beid")
         self.pades_level_var = ctk.StringVar(value="b-lta")  # PAdES level
+        # Page anchor (step 4): when validation finds files whose page count
+        # differs from the template, this selector decides whether EVERY file
+        # is signed on its own first or last page (default: last, matching
+        # the historical vignette position). Hidden while all counts match.
+        self.anchor_choice_var = ctk.StringVar(value="last page")
+        self.count_mismatch = False
         # azure mode state (CACHET_AZURE_* env vars pre-fill the panel).
         self.azure_vault_var = ctk.StringVar(
             value=os.environ.get(core.ENV_AZURE_VAULT_URL, "https://login.live.com"))
@@ -391,11 +401,26 @@ class CachetApp(ctk.CTk):
         header("4. Validation (page count + exact dimensions)")
         ctk.CTkButton(root, text="Validate files", command=self._validate).pack(anchor="w")
         self.valid_table = self._make_table(root, ("File", "Result", "Detail"), height=5)
+        # Shown by _validate() only when some files' page count differs from
+        # the template: the whole batch is then signed on each file's
+        # first/last page (packed before the step-5 header to keep the order).
+        self.anchor_row = ctk.CTkFrame(root, fg_color="transparent")
+        ctk.CTkLabel(
+            self.anchor_row,
+            text="Some files have a different page count than the template — "
+                 "sign every file on its:",
+        ).pack(side="left")
+        ctk.CTkOptionMenu(self.anchor_row, variable=self.anchor_choice_var,
+                          values=["last page", "first page"], width=130,
+                          command=lambda _choice: self._validate()
+                          ).pack(side="left", padx=8)
+        ctk.CTkLabel(self.anchor_row, text="(pick the position on that page in step 6)",
+                     text_color=("gray25", "gray70")).pack(side="left")
 
         # 5. mode — split vertically: controls + per-input explanations on the
         # LEFT, the "which signature / which level / AES vs QES" docs on the
         # RIGHT (with a Read-more popup for the full glossary).
-        header("5. Signing mode")
+        self._step5_header = header("5. Signing mode")
         split = ctk.CTkFrame(root, fg_color="transparent")
         split.pack(fill="x", pady=(0, 4))
         split.grid_columnconfigure(0, weight=1, uniform="step5")
@@ -680,13 +705,41 @@ class CachetApp(ctk.CTk):
         self.image_lbl.configure(text=self.image_path.name)
         self._draw_page()
 
+    def _page_anchor(self) -> str | None:
+        """"first"/"last" while the step-4 selector applies, else None."""
+        if not self.count_mismatch:
+            return None
+        return "first" if self.anchor_choice_var.get().startswith("first") else "last"
+
     def _validate(self) -> None:
         self._clear(self.valid_table)
         self.valid_paths = []
         if not self.template_path or not self.input_paths:
             self.status_lbl.configure(text="Choose a template and files first.")
             return
-        for r in core.validate_files(self.template_path, self.input_paths):
+        try:
+            template_dims = core.page_dimensions(self.template_path)
+        except Exception as exc:  # noqa: BLE001
+            self.status_lbl.configure(text=f"Template unreadable: {exc}")
+            return
+
+        # Page-count mismatches decide whether the first/last selector applies
+        # (unreadable files are reported by validate_against_template below).
+        def count_differs(p) -> bool:
+            try:
+                return len(core.page_dimensions(p)) != len(template_dims)
+            except Exception:  # noqa: BLE001
+                return False
+
+        self.count_mismatch = any(count_differs(p) for p in self.input_paths)
+        if self.count_mismatch:
+            self.anchor_row.pack(fill="x", pady=(2, 0), before=self._step5_header)
+        else:
+            self.anchor_row.pack_forget()
+
+        anchor = self._page_anchor()
+        for p in self.input_paths:
+            r = core.validate_against_template(template_dims, p, page_anchor=anchor)
             self.valid_table.insert("", "end",
                                     values=(r.path.name, "✓ OK" if r.ok else "✗ rejected", r.reason or "—"))
             if r.ok:
@@ -694,10 +747,24 @@ class CachetApp(ctk.CTk):
         self.status_lbl.configure(
             text=f"{len(self.valid_paths)}/{len(self.input_paths)} valid file(s)."
         )
+        self._sync_anchor_page()
+
+    def _sync_anchor_page(self) -> None:
+        """Lock the step-6 preview onto the template page that will carry the
+        signature (first/last) while the anchor selector applies; a position
+        clicked on another page no longer matches, so it is dropped."""
+        anchor = self._page_anchor()
+        if anchor and self.template_dims:
+            target = 0 if anchor == "first" else len(self.template_dims) - 1
+            self.cur_page = target
+            if self.place_page is not None and self.place_page != target + 1:
+                self.place_page = self.place_x = self.place_y = None
+                self.pos_lbl.configure(text="position: (click in the frame)")
+        self._draw_page()
 
     def _turn_page(self, delta: int) -> None:
-        if not self.template_dims:
-            return
+        if not self.template_dims or self._page_anchor():
+            return  # anchored: the page is locked by the step-4 selector
         self.cur_page = max(0, min(len(self.template_dims) - 1, self.cur_page + delta))
         self._draw_page()
 
@@ -721,6 +788,9 @@ class CachetApp(ctk.CTk):
     def _draw_page(self) -> None:
         if not hasattr(self, "canvas") or not self.template_dims:
             return
+        anchor = self._page_anchor()
+        if anchor:  # preview locked onto the page that carries the signature
+            self.cur_page = 0 if anchor == "first" else len(self.template_dims) - 1
         cw, ch = self._canvas_target_size()
         self.canvas.configure(width=cw, height=ch)
         self.canvas.delete("all")
@@ -736,13 +806,17 @@ class CachetApp(ctk.CTk):
             self.canvas.create_rectangle(ox, oy, ox + fw, oy + fh, outline="#333")
         else:                                       # render unavailable -> blank frame
             self.canvas.create_rectangle(ox, oy, ox + fw, oy + fh, fill="white", outline="#333")
-        self.page_lbl.configure(text=f"page {self.cur_page + 1}/{len(self.template_dims)}")
+        self.page_lbl.configure(
+            text=f"page {self.cur_page + 1}/{len(self.template_dims)}"
+                 + (f" — locked: {anchor} page" if anchor else "")
+        )
         self._frame_geom = (fw, fh, ox, oy)
         if self.place_page == self.cur_page + 1 and self.place_x is not None:
             self._draw_placeholder(self.place_x, self.place_y)
 
     def _on_canvas_click(self, event) -> None:
-        if self.mode_var.get() not in ("image", "beid") or not self.template_dims:
+        # the vignette (beid AND azure) or the image is placed by clicking
+        if self.mode_var.get() not in ("image", "beid", "azure") or not self.template_dims:
             return
         if not hasattr(self, "_frame_geom"):
             return
@@ -753,7 +827,9 @@ class CachetApp(ctk.CTk):
         pw, ph = self.template_dims[self.cur_page]
         x, y = core.frame_click_to_pdf_xy(pw, ph, fw, fh, cx, cy)
         self.place_page, self.place_x, self.place_y = self.cur_page + 1, x, y
-        self.pos_lbl.configure(text=f"position: page {self.place_page} @ ({x:.0f}, {y:.0f}) pt")
+        anchor = self._page_anchor()
+        where = f"{anchor} page" if anchor else f"page {self.place_page}"
+        self.pos_lbl.configure(text=f"position: {where} @ ({x:.0f}, {y:.0f}) pt")
         self._draw_page()
 
     def _placeholder_size_pt(self) -> tuple[float, float]:
@@ -804,7 +880,10 @@ class CachetApp(ctk.CTk):
             return
         # beid: a click places the vignette; without a click, default vignette
         # (bottom-right, last page). So we pass place_* as-is (None if no
-        # click) — process_batch derives the placement from it.
+        # click) — process_batch derives the placement from it. With the
+        # step-4 anchor active, the page is resolved PER DOCUMENT (first/last)
+        # instead of the fixed clicked page.
+        anchor = self._page_anchor()
         cfg = core.RunConfig(
             inputs=files,
             output=self.output_dir,
@@ -813,7 +892,8 @@ class CachetApp(ctk.CTk):
             pades_level=self.pades_level_var.get(),
             lib=self.default_lib,
             image_path=self.image_path,
-            page=self.place_page,
+            page=None if anchor else self.place_page,
+            page_anchor=anchor,
             x=self.place_x,
             y=self.place_y,
             # azure settings (ignored by the other modes). The worker batch

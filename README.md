@@ -39,7 +39,9 @@ Linux and Windows.
 
 In all modes, the same vignette/image + page + position is applied to **all**
 the documents in the batch — template validation guarantees the files are
-geometrically identical.
+geometrically identical. With `--page first|last` the target page is resolved
+**per document** instead, which also lets the batch contain files whose page
+count differs from the template (see *Template validation*).
 
 ### eID vs Azure — which one?
 
@@ -60,6 +62,14 @@ If a template PDF is supplied, each input is accepted **only** if it has the
 **same page count** AND **exactly identical per-page dimensions** (strict
 equality, no tolerance). Rejected files are never signed; the rejection reason
 is displayed (CLI summary / GUI table).
+
+**Files with a different page count** (e.g. scanned annexes were appended) can
+still be processed by targeting a per-document page: pass `--page first` or
+`--page last` (in the GUI, a selector appears after validation whenever such
+files are detected). Every file is then signed on its own first/last page at
+the chosen position; that page must still have **exactly** the template's
+corresponding page dimensions, so the position is guaranteed to fit. Files with
+the template's page count keep the full strict check.
 
 ## Output
 
@@ -130,7 +140,7 @@ python3 -m venv venv
 | `--template <pdf>` | template PDF; if supplied, inputs are validated against it. |
 | `--mode beid\|image` | signature mode (default `beid`). |
 | `--image-path <img>` | image to stamp (**required** in `--mode image`). |
-| `--page <N>` | target page, **1-based**. Image: insertion page. beID: vignette page. |
+| `--page <N\|first\|last>` | target page: a **1-based** number, or `first`/`last` (resolved **per document**; with `--template` this also accepts files whose page count differs — their first/last page must still match the template's). Image: insertion page. beID: vignette page. |
 | `--x <pt> --y <pt>` | lower-left corner, in points from the page's bottom-left. beID: **omit both ⇒ bottom-right of the last page**. |
 | `--pades-level <lvl>` | PAdES baseline level: `b-b`, `b-t`, `b-lt`, `b-lta` (**default `b-lta`**). See *Signature levels* below. |
 | `--timestamp-url <url>` | RFC 3161 TSA for levels ≥ b-t. Precedence: flag > `CACHET_TSA_URL` env > `http://timestamp.digicert.com`. |
@@ -213,11 +223,14 @@ python3 -m venv venv
 ## Usage — graphical interface
 
 A vertical wizard walks through the flow: **1.** template → **2.** files →
-**3.** output folder → **4.** validation (pass/fail table) → **5.** mode
+**3.** output folder → **4.** validation (pass/fail table; if some files have a
+**different page count** than the template, a selector appears to sign every
+file on its own **first or last page**) → **5.** mode
 (eID/image/**Azure** + PAdES level selector, default `b-lta`; in Azure mode a
 panel offers the vault settings and a **"Sign in with Microsoft"** action) →
 **6.** page + position (actual page preview, click to
-place) → **7.** launch → **8.** per-document summary.
+place; locked onto the first/last page while the step-4 selector applies) →
+**7.** launch → **8.** per-document summary.
 
 ---
 

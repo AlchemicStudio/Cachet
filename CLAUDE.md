@@ -93,7 +93,7 @@ Code comments and CLI/GUI text are in English.
 | `--mode beid\|image\|azure` | signature mode (default `beid`). |
 | `--azure-vault-url` / `--azure-key-name` / `--azure-key-name-template` / `--azure-cert-name` / `--azure-auth` / `--azure-trust-anchors` / `--azure-graph` | azure mode config; each falls back to its `CACHET_AZURE_*` env var. Vault URL required; key derived per-user from the template (default `sig-{upn}`; explicit override flagged); auth `interactive`/`device-code` (CLI default)/`default` (CI only, breaks per-user model); trust anchors = internal CA PEM/DER file-or-dir, required when LTV/verification needs them. |
 | `--image-path <img>` | image to stamp (**required** for `--mode image`). |
-| `--page <N>` | target page, **1-based**. Image: insertion page. beID: vignette page (with `--x/--y`). |
+| `--page <N\|first\|last>` | target page. A number is **1-based**; `first`/`last` (→ `RunConfig.page_anchor`) are resolved **per document** (index 0 / -1) and, with `--template`, accept files whose page count differs from the template (see validation rules). Image: insertion page. beID: vignette page (with `--x/--y`; with `first`/`last` and no position the default bottom-right vignette moves to that page). |
 | `--x <pt> --y <pt>` | lower-left position, points from the page's bottom-left. Image: image corner. beID: vignette corner — **omit both → default bottom-right of last page**. |
 | `--pades-level {b-b,b-t,b-lt,b-lta}` | PAdES baseline level, **default `b-lta`**. b-t+ needs a TSA; b-lt+ embeds OCSP/CRL (LTV) using EU-trusted-list anchors. Never silently downgraded on network failure. |
 | `--timestamp-url` / `--trust-list-url` | RFC 3161 TSA and EU LOTL overrides. Precedence: flag > env (`CACHET_TSA_URL` / `CACHET_LOTL_URL`) > default (DigiCert free TSA / official EU LOTL). Free TSA = technically valid but NOT qualified timestamps. |
@@ -142,7 +142,10 @@ The level → `PdfSignatureMetadata` mapping is the pure
 
 The **same** image/vignette + page + (x, y) is applied to every document —
 validation guarantees the files are geometrically identical, so one placement
-fits all. Output paths come from `unique_output_path()`: `{stem}_signe.pdf`,
+fits all. With `cfg.page_anchor` (`"first"`/`"last"`, exclusive with
+`cfg.page`) the page is resolved **per document** (`anchor_page_index`: 0 /
+-1) and validation only pins the anchor page, so page counts may differ.
+Output paths come from `unique_output_path()`: `{stem}_signe.pdf`,
 then `{stem}_signe - 1.pdf`, ` - 2`, … on collision — **existing files are never
 overwritten**.
 
@@ -155,6 +158,15 @@ tolerance**. Failures are returned as `ValidationResult(ok=False, reason=…)` a
 surfaced (CLI summary / GUI table); they are never silently signed. Dimensions
 come from the MediaBox (inherited through the page tree); rotation is not
 considered.
+
+With `page_anchor="first"|"last"` (CLI `--page first|last`, GUI step-4
+selector), a file whose **page count differs** from the template is accepted
+**iff its anchor page exactly matches the template's anchor page** — that is
+the page the signature lands on, so the chosen (x, y) is guaranteed to fit it.
+Files with the template's page count keep the full strict check; a count
+mismatch whose anchor page differs is rejected with both facts in the reason.
+Accepted mismatches carry an informative `reason` ("N page(s), the template
+has M — signed on the last page") even though `ok=True`.
 
 ## Image placement convention
 
@@ -172,7 +184,9 @@ pyHanko error.
 **beID vignette placement.** In `beid` mode, supplying `--x/--y` (or clicking in
 the GUI) places the vignette on `--page` at that lower-left point, sized to a
 **3:1 landscape box of width = page_w/5** (`vignette_size_pt`). With no position,
-the vignette keeps its default bottom-right-of-last-page box (`_last_page_box`).
+the vignette keeps its default bottom-right corner box
+(`_default_vignette_box(writer, page_index)` — the last page by default, the
+anchor page when `--page first|last` is set).
 `build_stamp_style(identity, box_w, box_h)` makes the photo band proportional to
 the box width (`_PHOTO_BAND_FRAC`, 0.2 → 42 pt for the default 210 pt box,
 unchanged), so the same layout fits both the default box and the smaller placed
@@ -185,10 +199,16 @@ reused by the GUI canvas.
 ## GUI workflow (`gui.py`)
 
 `CachetApp` (a `ctk.CTk`) lays the required steps top-to-bottom in a scrollable
-frame: (1) template, (2) files, (3) output, (4) **Validate** → pass/fail table,
+frame: (1) template, (2) files, (3) output, (4) **Validate** → pass/fail table
+— plus a **first/last-page selector** (`anchor_row`, default "last page") that
+appears only when some files' page count differs from the template; it maps to
+`RunConfig.page_anchor` for the whole batch and re-validates on change,
 (5) mode (beid/image + **PAdES level selector**, default `b-lta`, + RRN privacy
-note), (6) **page + position** — shown for **both** modes
-(image mode also reveals the image picker), (7) **Launch** (runs `process_batch`
+note), (6) **page + position** — shown for **all** modes
+(image mode also reveals the image picker); while the step-4 selector applies,
+the preview is **locked** onto the template's first/last page (Prev/Next
+no-op, label says "locked") and a position clicked on another page is dropped,
+(7) **Launch** (runs `process_batch`
 on a worker thread), (8) summary table.
 
 Step 6's `tkinter.Canvas` shows the **actual rendered template page** as its
@@ -228,7 +248,8 @@ would misorder the workflow. It shows for **both** modes; the image-picker row
    while hybrid xrefs are disabled`). `strict=False` is the intended escape
    hatch. Image insertion uses the same `strict=False` writer.
 3. **Vignette via `signers.PdfSigner(stamp_style=…, new_field_spec=…)`** — field
-   box defaults to the last page's MediaBox (`_last_page_box`, `on_page=-1`), or,
+   box defaults to a bottom-right corner box on the target page
+   (`_default_vignette_box`, `on_page=-1` unless a page anchor moves it), or,
    when `sign_one(..., pos=(x, y))` is given, a 3:1 box of width page_w/5 on the
    chosen page; background image and text positioned independently.
 
