@@ -22,6 +22,12 @@ before signing, outputs never overwrite existing files, and the whole thing
 ships as two standalone PyInstaller binaries (windowed GUI + headless CLI) for
 Linux and Windows.
 
+The GUI is a **step-by-step wizard** (template → documents → validation →
+output folder → signature type → placement → signing → report) with contextual
+help on every step, available in **English, French, Dutch, German, Spanish and
+Portuguese** (language selector on the welcome screen; the system language is
+picked by default).
+
 > ⚖️ The eID mode uses the card's **non-repudiation** certificate, legally
 > equivalent to a handwritten signature. The **national register number** is
 > embedded in every signature produced — mind the distribution of the signed
@@ -222,15 +228,22 @@ python3 -m venv venv
 
 ## Usage — graphical interface
 
-A vertical wizard walks through the flow: **1.** template → **2.** files →
-**3.** output folder → **4.** validation (pass/fail table; if some files have a
-**different page count** than the template, a selector appears to sign every
-file on its own **first or last page**) → **5.** mode
-(eID/image/**Azure** + PAdES level selector, default `b-lta`; in Azure mode a
-panel offers the vault settings and a **"Sign in with Microsoft"** action) →
-**6.** page + position (actual page preview, click to
-place; locked onto the first/last page while the step-4 selector applies) →
-**7.** launch → **8.** per-document summary.
+The app opens on a **welcome screen** (overview + language selector —
+English, French, Dutch, German, Spanish, Portuguese); **Start** launches a
+wizard with a stepper on top (completed steps green, problems red, unreached
+steps disabled), the current step's form on the left, contextual help on the
+right, and Previous/Next buttons that name the target step. **Cancel** asks
+for confirmation, then resets everything back to the welcome screen.
+
+The 8 steps: **1.** template → **2.** documents → **3.** validation (pass/fail
+table; if some files have a **different page count** than the template, a
+selector appears to sign every file on its own **first or last page**) →
+**4.** output folder → **5.** signature type (eID/image/**Azure** + PAdES
+level selector, default `b-lta`; in Azure mode a panel offers the vault
+settings and a **"Sign in with Microsoft"** action) → **6.** placement (actual
+page preview, click to place, plus a manual **target page** field; preview
+locked onto the first/last page while the step-3 selector applies) →
+**7.** signing (progress) → **8.** per-document report.
 
 ---
 
@@ -267,9 +280,10 @@ Headless `unittest` suite (no card, no tkinter):
 | `sign_pdfs_beid.py` | core + CLI entry point (business logic, importable without tkinter). |
 | `trust.py` | EU trusted-list (LOTL) trust provider: anchors for LTV in beid mode, with local cache. |
 | `azure_signer.py` | azure mode: Entra ID login, per-user Key Vault key/cert resolution, pyHanko signer (digest-only signing). |
-| `gui.py` | CustomTkinter interface (façade over the core). |
+| `gui.py` | CustomTkinter interface: landing page + 8-step wizard (façade over the core). |
+| `i18n.py` | GUI localization catalog (EN/FR/NL/DE/ES/PT). |
 | `gui_main.py` | entry point of the windowed binary (opens the GUI). |
-| `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py` | `unittest` test suites. |
+| `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py`, `test_i18n.py` | `unittest` test suites. |
 | `cachet.spec` | PyInstaller recipe (two binaries). |
 | `build_*.sh` / `build_windows.bat` | build scripts. |
 | `.github/workflows/build.yml` | CI: Windows + Linux binaries as artifacts. |

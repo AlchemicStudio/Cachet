@@ -22,17 +22,27 @@ wraps the same logic as the headless CLI.
   position. See the design note below: **image mode does NOT use the card** and
   is not a cryptographic signature; it is the alternative to `beid`.
 
-No build system, no linter config, no git repo. Tests use stdlib `unittest`.
-Code comments and CLI/GUI text are in English.
+No build system, no linter config. Tests use stdlib `unittest`.
+Code comments and CLI text are in English; the GUI is **localized**
+(EN/FR/NL/DE/ES/PT) through `i18n.py` — every user-visible GUI string goes
+through `i18n.tr(key, **fmt)`, never a hard-coded literal.
 
 ## Modules
 
 - `sign_pdfs_beid.py` — **core + CLI entry point**. All business logic lives
   here (eID signing, vignette, image insertion, validation, placement math,
   `RunConfig`/`process_batch`, arg parsing). Imports cleanly **without tkinter**.
-- `gui.py` — CustomTkinter GUI. Imported **only** when `--gui` is passed
-  (lazy), so the CLI/core/tests never require a display. It is a thin façade
-  over the core; all non-widget logic it needs is imported from the core.
+- `gui.py` — CustomTkinter GUI: a **landing page + 8-step wizard** (see "GUI
+  workflow"). Imported **only** when `--gui` is passed (lazy), so the
+  CLI/core/tests never require a display. It is a thin façade over the core;
+  all non-widget logic it needs is imported from the core, all its text from
+  `i18n.py`.
+- `i18n.py` — GUI localization: `LANGUAGES` (en/fr/nl/de/es/pt),
+  `tr(key, **fmt)`, `set_language`, `system_language` and the full `CATALOG`
+  (key → per-language strings). Import-safe **without tkinter**;
+  `test_i18n.py` enforces that every key exists in every language and that
+  placeholders match the English reference — add new GUI strings there in
+  ALL six languages.
 - `trust.py` — EU trusted-list (LOTL, ETSI TS 119 612) trust provider for LTV:
   LOTL → Belgian list → granted CA/QC-for-eSignatures certs as
   `ValidationContext` anchors; JSON cache under `platformdirs` (24 h TTL,
@@ -47,10 +57,11 @@ Code comments and CLI/GUI text are in English.
   sends ONLY the digest to `CryptographyClient.sign`, maps key type +
   `--digest` to RS256/…/ES256/…, converts ECDSA r||s → DER). Azure SDK
   imports are lazy; clients injectable for tests.
-- `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py` — headless
-  `unittest` suites (no card, no tkinter, no network).
+- `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py`, `test_i18n.py`
+  — headless `unittest` suites (no card, no network; the `Gui*` classes need
+  a display and skip themselves otherwise).
 - `pdfs/` (`../pdfs`), `signes/` (`../signes`) — sample inputs / output dir.
-- `venv/` — Python 3.14 virtualenv.
+- `venv/` — Python virtualenv (see "tkinter in this environment").
 
 ## Commands
 
@@ -79,7 +90,7 @@ Code comments and CLI/GUI text are in English.
 ./venv/bin/python -m unittest -v
 
 # Syntax check everything:
-./venv/bin/python -m py_compile sign_pdfs_beid.py gui.py trust.py azure_signer.py test_sign_pdfs_beid.py test_trust.py test_azure.py
+./venv/bin/python -m py_compile sign_pdfs_beid.py gui.py gui_main.py trust.py azure_signer.py i18n.py test_sign_pdfs_beid.py test_trust.py test_azure.py test_i18n.py
 ```
 
 ### CLI flags
@@ -159,7 +170,7 @@ surfaced (CLI summary / GUI table); they are never silently signed. Dimensions
 come from the MediaBox (inherited through the page tree); rotation is not
 considered.
 
-With `page_anchor="first"|"last"` (CLI `--page first|last`, GUI step-4
+With `page_anchor="first"|"last"` (CLI `--page first|last`, GUI validation-step
 selector), a file whose **page count differs** from the template is accepted
 **iff its anchor page exactly matches the template's anchor page** — that is
 the page the signature lands on, so the chosen (x, y) is guaranteed to fit it.
@@ -198,44 +209,76 @@ reused by the GUI canvas.
 
 ## GUI workflow (`gui.py`)
 
-`CachetApp` (a `ctk.CTk`) lays the required steps top-to-bottom in a scrollable
-frame: (1) template, (2) files, (3) output, (4) **Validate** → pass/fail table
-— plus a **first/last-page selector** (`anchor_row`, default "last page") that
-appears only when some files' page count differs from the template; it maps to
+`CachetApp` (a `ctk.CTk`) opens on a **landing page** (overview text, language
+selector, Start bottom-right — no stepper there); Start builds the **wizard**:
+a stepper bar on top, a split body (form on the left inside a
+`CTkScrollableFrame`, per-step contextual help `i18n` text on the right), and
+a footer whose Previous/Next labels **name the target step**
+(`nav.next`/`nav.previous`). Cancel opens a confirm modal; confirming (and
+Finish on the last step) calls `_reset_state()` and returns to the landing
+page. All texts come from `i18n.tr` — the language is chosen on the landing
+page (`system_language()` default) and fixed for the wizard's lifetime.
+
+The 8 steps (`_STEP_KEYS` → `_build_step_<key>`): (1) template, (2) files,
+(3) validation — auto-runs on first entry, pass/fail table, plus a localized
+**first/last-page selector** (`anchor_row`, default "last") that appears only
+when some files' page count differs from the template; it maps to
 `RunConfig.page_anchor` for the whole batch and re-validates on change,
-(5) mode (beid/image + **PAdES level selector**, default `b-lta`, + RRN privacy
-note), (6) **page + position** — shown for **all** modes
-(image mode also reveals the image picker); while the step-4 selector applies,
-the preview is **locked** onto the template's first/last page (Prev/Next
-no-op, label says "locked") and a position clicked on another page is dropped,
-(7) **Launch** (runs `process_batch`
-on a worker thread), (8) summary table.
+(4) output folder, (5) signature type (beid/azure/image radios + per-input
+hints + **PAdES level selector**, default `b-lta`; azure panel appears only in
+azure mode; "Full documentation" popup stays English), (6) placement — page
+preview + click for **all** modes (image mode adds the image picker) plus a
+manual **target-page field** (`page_text`) that follows the preview when in
+range and only warns when beyond the template; while a page anchor applies the
+field and Prev/Next are **disabled**, the preview is **locked** onto the
+template's first/last page (label says "locked") and a position clicked on
+another page is dropped (`_sync_anchor_page`) — `page` and `page_anchor` stay
+mutually exclusive in the built `RunConfig`, (7) signing — config summary
+(names the anchor when active) + Start + progress bar, (8) results report
+table.
+
+Step state drives the chrome (`_refresh_chrome`): per-step predicates
+`_step_complete` / `_step_error` color the stepper chips — current = accent,
+passed & clean = light-green border (`_COL_DONE`), problems = light-red
+(`_COL_ERROR`, e.g. rejected files on step 3, missing azure vault/anchors on
+step 5), reachable-pending = gray, beyond the first incomplete step = disabled
+(`_COL_LOCKED`) — a step is never shown green just because its *defaults* are
+valid. Next is disabled until the current step is complete; ALL navigation
+(stepper, Prev/Next, Cancel) locks while `_running`. Editing upstream state
+invalidates downstream results (`validation_results`, `run_results`) so the
+gating recomputes. Step content is **rebuilt on every entry** (state lives on
+the app, widgets are disposable) — update helpers guard widget access with
+`_alive(...)`.
 
 Step 6's `tkinter.Canvas` shows the **actual rendered template page** as its
 background (`core.render_page_image`: **pypdfium2** primary, `pdftoppm` fallback;
-cached per page; falls back to a white frame only if both are unavailable). Prev/Next change the page; a click sets
-the position, drawing a to-scale placeholder — the image (image mode) or a **3:1
-box of width page_w/5** (beid). The canvas **resizes with the window**:
-`<Configure>` on the toplevel → `_draw_page` recomputes the canvas size from the
-window (`_canvas_target_size`) and refits the page, preserving proportions
-(cached full-res page image is just rescaled, so no re-render on resize). Tables
-use `rowheight=30` + an explicit font so full text lines show.
+cached per page; falls back to a white frame only if both are unavailable).
+Prev/Next change the preview page; a click sets the position AND syncs the
+target-page field, drawing a to-scale placeholder — the image (image mode) or a
+**3:1 box of width page_w/5** (beid/azure). The canvas **resizes with the
+window**: `<Configure>` on the toplevel → `_draw_page` recomputes the canvas
+size from the window (`_canvas_target_size`) and refits the page, preserving
+proportions (cached full-res page image is just rescaled, so no re-render on
+resize). Tables use `rowheight=30` + an explicit font so full text lines show.
 
 Tkinter is **not thread-safe**, so the worker thread never touches widgets: it
 pushes `("row"/"done"/"error", payload)` onto a `queue.Queue`, and the main
-thread drains it via a periodic `self.after(100, self._poll_results)`. Calling
+thread drains it via a periodic `self.after(100, self._poll_results)` (progress
+bar + status on step 7; "done" auto-advances to the report). Calling
 `self.after(...)` *from* the worker raises `main thread is not in main loop` —
 do not reintroduce that. The worker catches `(Exception, SystemExit)`:
 `open_eid_session()` raises **`SystemExit`** (no reader/card), which is *not* an
 `Exception`, so a bare `except Exception` would let the worker die silently and
 hang the GUI on "Processing…". `_poll_results` also no-ops if the
-window was closed mid-batch. A guarded end-to-end test (`GuiImageEndToEnd`,
-skipped without a display) covers these paths.
+window was closed mid-batch. Guarded end-to-end tests (`GuiImageEndToEnd`,
+`GuiWizardChrome`, …, skipped without a display) cover these paths.
 
-The placement section (step 6) is `pack(before=self._after_image_anchor)`-ed so
-it sits **between** steps 5 and 7 — `pack()` appends to the end otherwise, which
-would misorder the workflow. It shows for **both** modes; the image-picker row
-(`self.image_row`) is `pack_forget`-ten in beid mode.
+**CTkEntry + StringVar pitfall**: `CTkEntry.destroy()` (CustomTkinter 5.2.2)
+does NOT remove the trace it adds on its textvariable (radio buttons and
+option menus do). Since step content is rebuilt constantly, entry-backed state
+is kept in **plain strings** (`page_text`, `azure_vault`, `azure_key`) synced
+via key bindings — do not "simplify" these back to shared `StringVar`s, or
+every later `var.set()` fires callbacks on dead widgets (TclError spam).
 
 ## Three deliberate workarounds (beid mode) — do not "simplify" away
 
@@ -280,12 +323,15 @@ national register number is embedded in every signature — mind PDF distributio
 
 ### tkinter in this environment
 
-The system `python3.14` base lacks the `_tkinter` C extension, so `tkinter`
+The system Python (3.12 here) lacks the `_tkinter` C extension, so `tkinter`
 (and thus `customtkinter`) cannot import out of the box. The clean fix is
-`sudo apt install python3.14-tk`. In this checkout the venv has been
-**provisioned** with `tkinter/` + `_tkinter*.so` (extracted from the
-`python3.14-tk` .deb) into `venv/lib/python3.14/site-packages/`, so `--gui`
-works here; recreating the venv requires redoing that (or the apt install).
+`sudo apt install python3-tk`. In this checkout the venv has been
+**provisioned** without root: `tkinter/` + `_tkinter*.so` extracted from the
+`python3-tk` .deb into `venv/lib/python3.12/site-packages/`, plus
+`libBLT.2.5.so.8.6` (from the `tk8.6-blt2.5` .deb — Ubuntu's `_tkinter` links
+against it) preloaded by `_blt_preload.pth` (a `sitecustomize.py` would be
+shadowed by Ubuntu's own). Recreating the venv requires redoing that (or the
+apt install).
 
 ## Validating changes without hardware
 
@@ -308,10 +354,15 @@ works here; recreating the venv requires redoing that (or the apt install).
   are unit-tested with stub credentials; NO test performs a real login —
   the real Entra+Key Vault path is the manual acceptance test in BUILD.md.
   Do not fake it into passing.
-- **GUI**: instantiate `gui.CachetApp(args)`, drive its methods, call
-  `app.update()`, and screenshot the window by id with ImageMagick
+- **GUI**: instantiate `gui.CachetApp(args)`, call `app._start_wizard()`,
+  inject state directly (`template_path`/`template_dims`/`input_paths`/
+  `output_dir`…), walk with `app._goto_step(i)`, call `app.update()`, and
+  screenshot the window by id with ImageMagick
   (`import -window <hex winfo_id> shot.png`) on `DISPLAY=:0` — this catches real
-  CustomTkinter API errors that `py_compile` cannot.
+  CustomTkinter API errors that `py_compile` cannot. Step 3 auto-validates on
+  entry; step 6 builds `app.canvas`; a finished batch auto-advances to step 8.
+- **i18n**: `test_i18n.py` (headless) checks catalog completeness and
+  placeholder parity across the six languages.
 - **vignette appearance** (beid): render `build_stamp_style(identity)` via
   `pyhanko.stamp.TextStamp.apply()` onto a copy with an explicit
   `BoxConstraints(width=_STAMP_W, height=_STAMP_H)`, then rasterize with
@@ -326,6 +377,10 @@ PyInstaller builds **two onefile binaries** from one shared spec
   core arg parser then calls `gui.launch_gui`); double-click → GUI.
 - **`cachet-cli`** — console (`console=True`), entry `sign_pdfs_beid.py`;
   headless, **excludes** tkinter/customtkinter to stay lean.
+
+`i18n.py` is a plain module imported by `gui.py`, so PyInstaller's import
+analysis bundles it into the GUI binary by itself — no spec change needed;
+the CLI neither imports nor needs it.
 
 Key spec facts (don't regress): no built-in PyInstaller hooks exist for
 `pyhanko`/`pyhanko_beid`/`pyhanko_certvalidator`/`asn1crypto`/`oscrypto`/`pkcs11`

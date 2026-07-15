@@ -784,12 +784,8 @@ class SummaryOutput(unittest.TestCase):
         self.assertNotIn("national register number", self._capture())
 
 
-class GuiImageEndToEnd(unittest.TestCase):
-    """Regression: GUI launch → thread → queue → table path (image mode).
-
-    Since Tkinter is not thread-safe, the worker must NOT call `after()`;
-    it pushes onto a queue drained by the main thread. Skipped if
-    tkinter/display is unavailable (e.g. headless CI)."""
+class _GuiTestBase(unittest.TestCase):
+    """Shared display-guarded setup for the wizard tests."""
 
     def setUp(self):
         import types
@@ -802,50 +798,74 @@ class GuiImageEndToEnd(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.types = types
 
-    def test_launch_populates_summary_and_writes_output(self):
-        import time
+    def make_app(self):
         import gui
+        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
+        app.update()
+        return app
+
+    def wizard_with_state(self, app, tpl, out, inputs=None):
+        """Start the wizard and inject valid template/files/output state,
+        then run the validation step (it auto-validates on entry)."""
+        app._start_wizard()
+        app.template_path = tpl
+        app.template_error = None
+        app.template_dims = core.page_dimensions(tpl)
+        app.input_paths = list(inputs) if inputs is not None else [tpl]
+        app.output_dir = out
+        app._goto_step(2)               # validation auto-runs on first entry
+        app.update()
+
+
+class GuiImageEndToEnd(_GuiTestBase):
+    """Regression: wizard → worker thread → queue → report path (image mode).
+
+    Since Tkinter is not thread-safe, the worker must NOT call `after()`;
+    it pushes onto a queue drained by the main thread. Skipped if
+    tkinter/display is unavailable (e.g. headless CI)."""
+
+    def test_launch_populates_report_and_writes_output(self):
+        import time
         tpl = make_pdf(self.tmp / "t.pdf", [(595, 842), (595, 842)])
         png = make_png(self.tmp / "s.png")
         out = self.tmp / "out"
-        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
-        app.update()
-        app.template_path = tpl
-        app.template_dims = core.page_dimensions(tpl)
-        app.input_paths = [tpl]
-        app.output_dir = out
-        app._validate()
+        app = self.make_app()
+        self.wizard_with_state(app, tpl, out)
+        self.assertEqual(len(app.valid_paths), 1)
         app.mode_var.set("image")
-        app._refresh_placement_section()
         app.image_path = png
+        app._goto_step(5)               # placement step builds the canvas
         app._draw_page()
         app.update()
         fw, fh, ox, oy = app._frame_geom
         app._on_canvas_click(self.types.SimpleNamespace(x=ox + fw * 0.5, y=oy + fh * 0.5))
         app.update()
+        app._goto_step(6)               # signing step
         app._launch()
+        self.assertTrue(app._running)
         self.assertEqual(str(app.launch_btn.cget("state")), "disabled")  # locked during
+        self.assertEqual(str(app._btn_next.cget("state")), "disabled")   # nav locked
         for _ in range(120):                       # pump the Tk loop (max ~6 s)
             app.update()
             time.sleep(0.05)
-            if app.status_lbl.cget("text").startswith(("Done", "Error")):
+            if not app._running:
                 break
         app.update()
-        status = app.status_lbl.cget("text")
+        run_error = app.run_error
+        results = app.run_results
+        step = app.step_index
         n_rows = len(app.summary_table.get_children())
-        btn_state = str(app.launch_btn.cget("state"))
         app.destroy()
-        self.assertTrue(status.startswith("Done"), status)      # not "Error" / not frozen
+        self.assertIsNone(run_error)
+        self.assertIsNotNone(results)              # not "Error" / not frozen
+        self.assertEqual(step, 7)                  # auto-advanced to the report
         self.assertEqual(n_rows, 1)
-        self.assertEqual(btn_state, "normal")                   # re-enabled afterwards
         self.assertTrue((out / "t_signe.pdf").exists())
 
     def test_run_batch_reports_systemexit_without_hanging(self):
         # open_eid_session() raises SystemExit (no reader/card); the worker
         # must catch it and publish an error, not die silently.
-        import gui
-        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
-        app.update()
+        app = self.make_app()
         app._result_q = __import__("queue").Queue()
 
         def boom(*a, **k):
@@ -862,32 +882,18 @@ class GuiImageEndToEnd(unittest.TestCase):
         self.assertIn("reader", payload)
 
 
-class GuiBeidPlacement(unittest.TestCase):
-    """GUI-side refinements 1/4/5 in beid mode: 3:1 placeholder (1/5 page),
-    no image picker, canvas that follows the window. Skipped without a display."""
-
-    def setUp(self):
-        import types
-        try:
-            import tkinter
-            tkinter.Tk().destroy()
-            import gui  # noqa: F401
-        except Exception as exc:  # noqa: BLE001
-            self.skipTest(f"tkinter/GUI unavailable: {exc}")
-        self.types = types
-        self.tmp = Path(tempfile.mkdtemp())
+class GuiBeidPlacement(_GuiTestBase):
+    """Placement step in beid mode: 3:1 placeholder (1/5 page), no image
+    picker, click → target-page sync, canvas that follows the window."""
 
     def test_beid_placeholder_and_resize(self):
-        import gui
         tpl = make_pdf(self.tmp / "t.pdf", [(600, 800), (600, 800)])
-        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
+        app = self.make_app()
         app.geometry("900x950")
         app.update()
-        app.template_path = tpl
-        app._page_img_cache.clear()
-        app.template_dims = core.page_dimensions(tpl)
+        self.wizard_with_state(app, tpl, self.tmp)
         app.mode_var.set("beid")
-        app._refresh_placement_section()
+        app._goto_step(5)               # placement step
         app.update()
         # beid mode: no image picker (row not handled by a manager)
         self.assertEqual(app.image_row.winfo_manager(), "")
@@ -895,10 +901,12 @@ class GuiBeidPlacement(unittest.TestCase):
         iw, ih = app._placeholder_size_pt()
         self.assertAlmostEqual(iw, 600 / 5)
         self.assertAlmostEqual(iw / ih, 3.0)
-        # a click sets the position (in beid mode too, not just image)
+        # a click sets the position (in beid mode too, not just image) and
+        # syncs the manual target-page field
         fw, fh, ox, oy = app._frame_geom
         app._on_canvas_click(self.types.SimpleNamespace(x=ox + fw * 0.5, y=oy + fh * 0.5))
         self.assertIsNotNone(app.place_x)
+        self.assertEqual(app.page_text, "1")
         big = app.canvas.winfo_reqwidth()
         # shrink the window -> the canvas shrinks, proportions preserved
         app.geometry("520x680")
@@ -908,34 +916,98 @@ class GuiBeidPlacement(unittest.TestCase):
         self.assertLess(small, big)
 
 
-class GuiPageAnchor(unittest.TestCase):
-    """Step-4 first/last selector: appears only when some files' page count
-    differs from the template, locks the step-6 preview onto that template
-    page, and the batch signs those files on their own first/last page.
-    Skipped without a display."""
+class GuiWizardChrome(_GuiTestBase):
+    """Wizard shell: step gating, dynamic nav labels, stepper state colors,
+    cancel-confirm reset, and localized chrome."""
 
-    def setUp(self):
-        import types
-        try:
-            import tkinter
-            tkinter.Tk().destroy()
-            import gui  # noqa: F401
-        except Exception as exc:  # noqa: BLE001
-            self.skipTest(f"tkinter/GUI unavailable: {exc}")
-        self.types = types
-        self.tmp = Path(tempfile.mkdtemp())
-
-    def test_selector_hidden_without_mismatch(self):
-        import gui
-        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
-        same = make_pdf(self.tmp / "same.pdf", [(595, 842)])
-        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
+    def test_gating_and_dynamic_labels(self):
+        from i18n import tr
+        app = self.make_app()
+        app._start_wizard()
         app.update()
+        # step 1: no template yet -> Previous and Next both disabled, and the
+        # Next label names the target step
+        self.assertEqual(str(app._btn_prev.cget("state")), "disabled")
+        self.assertEqual(str(app._btn_next.cget("state")), "disabled")
+        self.assertIn(tr("step.files.title"), app._btn_next.cget("text"))
+        # steps beyond the first incomplete one are locked
+        self.assertEqual(str(app._stepper_btns[4].cget("state")), "disabled")
+        app._goto_step(4)
+        self.assertEqual(app.step_index, 0)
+        # completing step 1 unlocks Next
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
         app.template_path = tpl
         app.template_dims = core.page_dimensions(tpl)
-        app.input_paths = [same]
-        app.output_dir = self.tmp / "o"
-        app._validate()
+        app._refresh_chrome()
+        self.assertEqual(str(app._btn_next.cget("state")), "normal")
+        app.destroy()
+
+    def test_validation_errors_color_the_stepper(self):
+        import gui
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
+        bad = make_pdf(self.tmp / "bad.pdf", [(300, 300)])
+        app = self.make_app()
+        app._start_wizard()
+        app.template_path = tpl
+        app.template_error = None
+        app.template_dims = core.page_dimensions(tpl)
+        app.input_paths = [tpl, bad]
+        app._goto_step(2)
+        app.update()
+        self.assertEqual(len(app.valid_paths), 1)
+        # a rejected file marks the validation step red; passed steps green
+        self.assertEqual(app._stepper_btns[2].cget("border_color"), gui._COL_ERROR)
+        self.assertEqual(app._stepper_btns[0].cget("border_color"), gui._COL_DONE)
+        app.destroy()
+
+    def test_cancel_confirm_resets_to_landing(self):
+        import customtkinter as ctk
+
+        from i18n import tr
+        app = self.make_app()
+        app._start_wizard()
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
+        app.template_path = tpl
+        app.template_dims = core.page_dimensions(tpl)
+        app._refresh_chrome()
+        app._cancel_wizard()
+        app.update()
+        tops = [w for w in app.winfo_children() if isinstance(w, ctk.CTkToplevel)]
+        self.assertTrue(tops, "cancel confirmation modal missing")
+        btns = [w for w in tops[0].winfo_children()[-1].winfo_children()
+                if isinstance(w, ctk.CTkButton)]
+        confirm = next(b for b in btns if b.cget("text") == tr("cancel.confirm"))
+        confirm.invoke()
+        app.update()
+        self.assertIsNone(app.template_path)       # all data reset
+        self.assertEqual(app._stepper_btns, [])    # back on the landing page
+        app.destroy()
+
+    def test_localized_wizard_chrome(self):
+        import i18n
+        app = self.make_app()
+        try:
+            i18n.set_language("fr")
+            app._start_wizard()
+            app.update()
+            self.assertEqual(app._stepper_btns[0].cget("text"), "1. Modèle")
+            self.assertEqual(app._btn_cancel.cget("text"), "Annuler")
+        finally:
+            i18n.set_language("en")
+        app.destroy()
+
+
+class GuiPageAnchor(_GuiTestBase):
+    """Validation-step first/last selector: appears only when some files'
+    page count differs from the template, locks the placement preview onto
+    that template page (target-page field and Prev/Next disabled), and the
+    batch signs those files on their own first/last page."""
+
+    def test_selector_hidden_without_mismatch(self):
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
+        same = make_pdf(self.tmp / "same.pdf", [(595, 842)])
+        app = self.make_app()
+        self.wizard_with_state(app, tpl, self.tmp / "o", inputs=[same])
         manager = app.anchor_row.winfo_manager()
         anchor = app._page_anchor()
         app.destroy()
@@ -944,45 +1016,47 @@ class GuiPageAnchor(unittest.TestCase):
 
     def test_selector_locks_page_and_signs_short_file(self):
         import time
-        import gui
         tpl = make_pdf(self.tmp / "t.pdf", [(595, 842), (595, 842)])
         short = make_pdf(self.tmp / "short.pdf", [(595, 842)])    # 1 page vs 2
         png = make_png(self.tmp / "s.png")
         out = self.tmp / "out"
-        app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
-        app.update()
-        app.template_path = tpl
-        app.template_dims = core.page_dimensions(tpl)
-        app.input_paths = [short]
-        app.output_dir = out
-        app._validate()
-        app.update()
+        app = self.make_app()
+        self.wizard_with_state(app, tpl, out, inputs=[short])
         self.assertNotEqual(app.anchor_row.winfo_manager(), "")   # selector shown
         self.assertEqual(app.valid_paths, [short])                # accepted
+        self.assertEqual(app._page_anchor(), "last")              # default anchor
         self.assertEqual(app.cur_page, 1)     # locked on the template's LAST page
-        app.anchor_choice_var.set("first page")   # switch the anchor
-        app._validate()                           # (menu command re-validates)
-        self.assertEqual(app.cur_page, 0)
-        app._turn_page(1)                         # navigation is locked
+        app._set_page_anchor_choice("first")      # switch (menu re-validates)
+        self.assertEqual(app._page_anchor(), "first")
         self.assertEqual(app.cur_page, 0)
         # end-to-end in image mode: the 1-page file gets signed on page 1
         app.mode_var.set("image")
-        app._refresh_placement_section()
         app.image_path = png
-        app._draw_page()
+        app._goto_step(5)                         # placement step, locked
         app.update()
+        self.assertEqual(app.cur_page, 0)
+        app._turn_page(1)                         # navigation is locked
+        self.assertEqual(app.cur_page, 0)
+        self.assertEqual(str(app.page_entry.cget("state")), "disabled")
         fw, fh, ox, oy = app._frame_geom
         app._on_canvas_click(self.types.SimpleNamespace(x=ox + fw * 0.5, y=oy + fh * 0.5))
+        app.update()
+        app._goto_step(6)                         # signing step
         app._launch()
         for _ in range(120):                      # pump the Tk loop (max ~6 s)
             app.update()
             time.sleep(0.05)
-            if app.status_lbl.cget("text").startswith(("Done", "Error")):
+            if not app._running:
                 break
-        status = app.status_lbl.cget("text")
+        app.update()
+        results = app.run_results
+        step = app.step_index
         n_rows = len(app.summary_table.get_children())
         app.destroy()
-        self.assertTrue(status.startswith("Done"), status)
+        self.assertIsNotNone(results)
+        self.assertTrue(results[0].ok, results[0].detail)
+        self.assertIn("first page", results[0].detail)
+        self.assertEqual(step, 7)                 # auto-advanced to the report
         self.assertEqual(n_rows, 1)
         self.assertTrue((out / "short_signe.pdf").exists())
 
