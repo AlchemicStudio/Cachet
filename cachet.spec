@@ -142,6 +142,10 @@ gui_hidden = list(common_hidden)
 
 # customtkinter: hook provided, but collect_all guarantees themes + fonts.
 _add_all("customtkinter", datas=gui_datas, binaries=gui_binaries, hidden=gui_hidden)
+
+# The GUI's own assets: the top-bar logo (gui._asset_path resolves it under
+# sys._MEIPASS in the frozen binary). GUI binary only — the CLI has no UI.
+gui_datas.append(("logo.png", "."))
 gui_hidden += [
     "darkdetect",
     "tkinter",
