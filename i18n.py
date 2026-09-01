@@ -246,6 +246,14 @@ CATALOG: dict[str, dict[str, str]] = {
         "es": "Idioma:",
         "pt": "Idioma:",
     },
+    "support.button": {
+        "en": "♥ Support Cachet",
+        "fr": "♥ Soutenir Cachet",
+        "nl": "♥ Steun Cachet",
+        "de": "♥ Cachet unterstützen",
+        "es": "♥ Apoyar Cachet",
+        "pt": "♥ Apoiar o Cachet",
+    },
     "landing.start": {
         "en": "Start",
         "fr": "Commencer",

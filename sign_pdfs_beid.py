@@ -28,7 +28,7 @@ from __future__ import annotations
 # merging develop -> main triggers the release workflow, which tags
 # v{__version__} and publishes the binaries (see .github/workflows/release.yml
 # and BUILD.md "Release process").
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import argparse
 import dataclasses

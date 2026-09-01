@@ -151,3 +151,26 @@ jobs:
 
             Runtime requirements (beid mode): Belgian eID middleware + reader.
             Levels ≥ b-t need network (TSA / trust lists / OCSP-CRL) — see BUILD.md.
+
+      # Rebuilds cachet.alchemic.studio so the release data baked into its
+      # pages matches this version. The site also queries the GitHub API from
+      # the browser on every page load, so skipping this only leaves the
+      # prerendered copy stale — it never leaves the site wrong.
+      #
+      # Needs a token that can write to AlchemicStudio/cachet-website; the
+      # job's own GITHUB_TOKEN is scoped to this repository. Create a
+      # fine-grained PAT with "Contents: read and write" on cachet-website and
+      # store it as the WEBSITE_DISPATCH_TOKEN secret. Without it the step
+      # reports a notice and the release still succeeds.
+      - name: Refresh the website
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::notice::WEBSITE_DISPATCH_TOKEN is not set - skipping the website refresh."
+            exit 0
+          fi
+          gh api repos/AlchemicStudio/cachet-website/dispatches \
+            -f event_type=cachet-release
+          echo "::notice::Asked cachet-website to rebuild."
