@@ -28,7 +28,7 @@ from __future__ import annotations
 # merging develop -> main triggers the release workflow, which tags
 # v{__version__} and publishes the binaries (see .github/workflows/release.yml
 # and BUILD.md "Release process").
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import argparse
 import dataclasses
@@ -794,6 +794,27 @@ def _render_with_pdftoppm(pdf_path, page_index: int, px_width: int):
         img = Image.open(pngs[0])
         img.load()
         return img
+
+
+def open_in_file_manager(path, *, system: str | None = None,
+                         popen=subprocess.Popen, startfile=None) -> None:
+    """Show ``path`` (the output folder) in the desktop's file manager:
+    Explorer on Windows (``os.startfile``), Finder on macOS (``open``),
+    ``xdg-open`` elsewhere. A missing folder raises ``FileNotFoundError``
+    before anything is launched (the Unix launchers exit asynchronously, so
+    their own failures are not observable), and a missing launcher / an
+    ``os.startfile`` refusal propagate — the caller reports them.
+    ``system``/``popen``/``startfile`` are injectable for tests (no desktop
+    is touched there)."""
+    system = system or platform.system()
+    target = str(path)
+    if not Path(target).is_dir():
+        raise FileNotFoundError(f"Folder not found: {target}")
+    if system == "Windows":
+        (startfile or os.startfile)(target)  # noqa: S606 - opens a folder, no shell
+        return
+    cmd = ["open", target] if system == "Darwin" else ["xdg-open", target]
+    popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def unique_output_path(out_dir, stem: str, suffix: str = "_signe") -> Path:

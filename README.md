@@ -25,8 +25,8 @@ Linux and Windows.
 The GUI is a **step-by-step wizard** (template → documents → validation →
 output folder → signature type → placement → signing → report) with contextual
 help on every step, available in **English, French, Dutch, German, Spanish and
-Portuguese** (language selector on the welcome screen; the system language is
-picked by default).
+Portuguese** (language selector on the welcome screen and at the top of every
+wizard step; the system language is picked by default).
 
 > ⚖️ The eID mode uses the card's **non-repudiation** certificate, legally
 > equivalent to a handwritten signature. The **national register number** is
@@ -230,20 +230,28 @@ python3 -m venv venv
 
 The app opens on a **welcome screen** (overview + language selector —
 English, French, Dutch, German, Spanish, Portuguese); **Start** launches a
-wizard with a stepper on top (completed steps green, problems red, unreached
-steps disabled), the current step's form on the left, contextual help on the
-right, and Previous/Next buttons that name the target step. **Cancel** asks
-for confirmation, then resets everything back to the welcome screen.
+wizard with the **language selector in its top bar** (switching re-renders
+the current step in place, nothing entered is lost), a stepper (completed
+steps green, problems red, unreached steps disabled), the current step's form
+on the left, contextual help on the right, and Previous/Next buttons that
+name the target step. **Cancel** asks for confirmation, then resets everything
+back to the welcome screen.
 
-The 8 steps: **1.** template → **2.** documents → **3.** validation (pass/fail
+The 8 steps: **1.** template (with a single PDF to sign, pick that document
+itself as the template) → **2.** documents → **3.** validation (pass/fail
 table; if some files have a **different page count** than the template, a
 selector appears to sign every file on its own **first or last page**) →
 **4.** output folder → **5.** signature type (eID/image/**Azure** + PAdES
 level selector, default `b-lta`; in Azure mode a panel offers the vault
-settings and a **"Sign in with Microsoft"** action) → **6.** placement (actual
-page preview, click to place, plus a manual **target page** field; preview
-locked onto the first/last page while the step-3 selector applies) →
-**7.** signing (progress) → **8.** per-document report.
+settings and a **"Sign in with Microsoft"** action; **"Full documentation"**
+opens the localized reference — modes, PAdES levels, AES vs QES, glossary —
+ending with clickable links to the source standards) → **6.** placement
+(actual page preview, click to place — in eID/Azure modes the vignette is
+signed exactly there —, plus a manual **target page** field; when page counts
+differ, the first/last selector is also shown at the top of this step and the
+preview is locked onto that page) → **7.** signing (summary, a green
+**"insert your eID card"** reminder in eID mode, progress) → **8.**
+per-document report with an **"Open output folder"** button.
 
 ---
 
@@ -281,7 +289,8 @@ Headless `unittest` suite (no card, no tkinter):
 | `trust.py` | EU trusted-list (LOTL) trust provider: anchors for LTV in beid mode, with local cache. |
 | `azure_signer.py` | azure mode: Entra ID login, per-user Key Vault key/cert resolution, pyHanko signer (digest-only signing). |
 | `gui.py` | CustomTkinter interface: landing page + 8-step wizard (façade over the core). |
-| `i18n.py` | GUI localization catalog (EN/FR/NL/DE/ES/PT). |
+| `i18n.py` | GUI localization catalog (EN/FR/NL/DE/ES/PT), light `**bold**` markup helper, documentation sections/sources. |
+| `i18n_docs.py` | long-form documentation of the "Full documentation" popup, six languages (merged into the catalog). |
 | `gui_main.py` | entry point of the windowed binary (opens the GUI). |
 | `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py`, `test_i18n.py` | `unittest` test suites. |
 | `cachet.spec` | PyInstaller recipe (two binaries). |

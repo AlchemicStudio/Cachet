@@ -11,16 +11,22 @@ Structure:
 
 * **Landing page** — app overview, language selector (EN/FR/NL/DE/ES/PT via
   `i18n.py`), and a Start button. No stepper here.
-* **Wizard** — a stepper bar on top (current step highlighted; completed
-  steps get a light-green border, steps with problems a light-red one,
-  not-yet-reachable steps are disabled), a split body (form on the left,
-  contextual help on the right), and a navigation footer whose Previous/Next
-  labels name the target step. Cancel asks for confirmation, then resets
-  everything and returns to the landing page.
+* **Wizard** — a top bar with the same language selector (switching
+  rebuilds the chrome and the current step in place; all state lives on the
+  app, so nothing is lost), a stepper bar (current step highlighted;
+  completed steps get a light-green border, steps with problems a light-red
+  one, not-yet-reachable steps are disabled), a split body (form on the
+  left, contextual help on the right — help and documentation texts render
+  the catalog's light ``**bold**`` markup), and a navigation footer whose
+  Previous/Next labels name the target step. Cancel asks for confirmation,
+  then resets everything and returns to the landing page.
 
 The 8 steps: template → documents → validation → output folder → signature
-type → placement (page preview + click, plus an explicit target-page field)
-→ signing (progress) → results report.
+type (+ localized "Full documentation" popup ending with source links) →
+placement (page preview + click, an explicit target-page field and — when
+page counts differ — the first/last-page selector mirrored from validation)
+→ signing (summary, green "insert your eID card" reminder, progress) →
+results report (+ "Open output folder").
 
 Threading rule (do not regress): tkinter is NOT thread-safe. The batch runs
 on a worker thread that never touches widgets — it only pushes onto a
@@ -33,8 +39,9 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import webbrowser
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, font as tkfont, ttk
 
 import customtkinter as ctk
 from PIL import Image, ImageTk
@@ -64,231 +71,9 @@ _COL_ERROR = ("#e08a8a", "#a85454")      # step with problems: light red
 _COL_TODO = ("gray55", "gray45")         # pending, reachable
 _COL_LOCKED = ("gray80", "gray25")       # not reachable yet
 
-
-# --------------------------------------------------------------------------
-# Built-in documentation (English only — the localized per-step help lives in
-# i18n.py; this is the in-depth reference opened via "Full documentation").
-# --------------------------------------------------------------------------
-
-_DOC_PANEL = """\
-THE THREE MODES
-
-Cachet signs a whole batch of PDFs the same way. Pick the mode that matches the legal weight you need.
-
-• BEID — your Belgian eID card
-  What it is: a qualified electronic signature (QES), the highest legal tier, equivalent to a handwritten signature.
-  Requires: a card reader, your eID card, and one PIN entry per document. A visible vignette (your photo, name, and date) is added.
-  Use it when: a document must be legally binding and provably signed by you in person.
-  Note: your national register number (RRN) is embedded in every signature, so share signed files carefully.
-
-• AZURE — your personal certificate in Azure Key Vault
-  What it is: an advanced electronic signature (AES). Strong and verifiable, but one tier below QES.
-  Requires: one Microsoft login per batch (not per document). Only the document digest leaves your machine; the private key never does. Trust is anchored on your organisation's internal CA.
-  Use it when: you need a real cryptographic signature for many files quickly, without your physical card.
-
-• IMAGE — paste a picture only
-  What it is: a visual stamp, NOT a cryptographic signature. No legal value.
-  Requires: nothing; works fully offline.
-  Use it when: you only need a document to look signed, with no legal effect.
-
-RECOMMENDATION: use BEID for legally binding documents, AZURE for large batches, and IMAGE only for appearance.
-
-
-PAdES LEVELS
-
-PAdES levels (ETSI EN 319 142-1) describe how durable and verifiable your signature is. Each level builds on the one before it. Cachet uses b-lta by default and never silently drops to a lower level if the network fails.
-
-• B-B (basic) — The core signature: it proves who signed and that the document has not changed. Works fully offline. Pick it only for quick internal drafts where long-term proof and a trusted time do not matter.
-
-• B-T (+ timestamp) — Adds a trusted timestamp from a time-stamping authority (TSA), proving WHEN you signed. Needs network access. Pick it when the signing date must be provable but long-term archiving is not required.
-
-• B-LT (+ long-term validation) — Embeds the revocation data (OCSP/CRL) and CA certificates inside the PDF (LTV). The signature stays verifiable even after the certificates expire. Needs network access. Pick it for documents you must keep and check years later.
-
-• B-LTA (+ archival, DEFAULT) — Adds an archival timestamp chain so the proof itself survives for decades (the chain is renewed every few years). Needs network access. This is the default because it gives the strongest, longest-lasting guarantee for official records.
-
-
-AES VS QES: WHICH SIGNATURE DO I NEED?
-
-Under EU law (eIDAS) there are three levels of electronic signature:
-
-• SES (simple): any electronic mark, even a pasted picture. Easy, but weak proof of who signed. This is what "image" mode produces — no legal value.
-
-• AES (advanced): uniquely tied to one signer and to the exact document; any later change is detectable. This is "azure" mode.
-
-• QES (qualified): an AES made with a certified device and a face-to-face-verified identity. By law it is equal to a handwritten signature. This is "beid" (eID card) mode.
-
-QES — eID CARD (beid)
-Pros: the strongest level; legally equal to a handwritten signature; accepted by any third party with no prior agreement.
-Cons: needs a card reader and your card; you type your PIN ONCE PER DOCUMENT (slow for big batches); your national register number (RRN) is embedded in every file.
-
-AES — AZURE KEY VAULT (azure)
-Pros: ONE login per batch, so fast for many files; no card or reader; no RRN exposure.
-Cons: not "qualified"; trust relies on your organisation's internal CA, so outside parties may not recognise it automatically.
-
-WHICH ONE SHOULD I CHOOSE?
-
-• Internal documents, or large batches: use azure (AES). One login signs the whole batch.
-
-• Documents leaving the organisation, or where a handwritten-equivalent signature is required: use beid (QES), accepting one PIN per document.
-
-• No card or reader available: azure is your only cryptographic option.
-"""
-
-_FULL_DOC = """\
-Cachet signs PDF documents in batches. It can apply three kinds of mark: a
-cryptographic signature made with your Belgian eID card (beid), a cryptographic
-signature made with your personal certificate held in Azure Key Vault (azure),
-or a simple pasted image with no legal value (image). For the two cryptographic
-modes it follows the European PAdES standard and, after signing, re-checks each
-file and tells you exactly what was achieved. The terms below explain what those
-checks and labels mean.
-
-
-GLOSSARY
-
-ELECTRONIC SIGNATURE
-A legally recognised way to sign a document electronically. Unlike a scanned
-handwritten signature, a cryptographic electronic signature also proves WHO
-signed and that the file has not changed since.
-
-SES / AES / QES
-The three eIDAS tiers, weakest to strongest. SES (simple) is just "an
-electronic mark". AES (advanced) is uniquely linked to the signer and detects
-any later change. QES (qualified) is an AES made with a qualified certificate
-and secure device, and is legally equal to a handwritten signature. eID = QES,
-Azure = AES, image = none.
-
-eIDAS
-The EU regulation that defines electronic signatures, trust services and the
-SES/AES/QES tiers, so a signature made in one EU country is recognised across
-the others.
-
-PAdES
-"PDF Advanced Electronic Signatures": the ETSI standard (EN 319 142-1) for
-embedding signatures inside PDF files. Cachet writes PAdES signatures so any
-compliant reader (e.g. Adobe) can verify them.
-
-CMS
-The low-level container format (Cryptographic Message Syntax) that actually
-holds the signature bytes, certificates and timestamps inside the PDF. PAdES is
-a PDF-specific profile built on top of CMS.
-
-DIGEST / HASH
-A short fixed-length fingerprint computed from the document. Change one byte and
-the fingerprint changes completely. The signature is made over this fingerprint,
-which is why only the digest, never the full file, is sent to Azure.
-
-CERTIFICATE
-An electronic identity card for a cryptographic key: it binds a public key to a
-person or service and is itself signed by a Certificate Authority. Yours proves
-the signature really came from you.
-
-CA / CERTIFICATE CHAIN
-A Certificate Authority (CA) issues certificates. Verifying a signature means
-following the chain from your certificate up through one or more CAs to a trusted
-root. If the whole chain checks out, the signature is trusted.
-
-eID / NON-REPUDIATION CERTIFICATE
-A Belgian eID card carries two certificates; Cachet uses the
-"non-repudiation" one, which is reserved for legally binding signatures (as
-opposed to the "authentication" certificate used only to log in).
-
-RRN
-The Belgian National Register Number. It is embedded in every eID signature.
-Anyone who receives a signed PDF can read it, so share signed files carefully.
-
-PKCS#11
-The standard software interface Cachet uses to talk to the eID card through the
-card-reader middleware. It lets the app use the card's key without the key ever
-leaving the card.
-
-PIN
-The secret code that unlocks your eID card's signing key. The card never reveals
-the key; it only signs when the PIN is correct. In beid mode Cachet asks for it
-once PER DOCUMENT.
-
-AZURE KEY VAULT
-A Microsoft cloud service that stores your personal certificate and key so the
-key cannot be exported. Signing happens inside the vault: only the document
-digest is sent there, and the signed result comes back.
-
-MICROSOFT ENTRA ID
-Microsoft's identity and login service (formerly Azure Active Directory). In
-azure mode you log in once PER BATCH to prove you may use your key in the vault.
-
-UPN
-User Principal Name: your sign-in identity in Entra ID, usually in the form
-name@organisation. It is how the app knows which vault account is yours.
-
-RFC 3161 TIMESTAMP / TSA
-A trusted, dated stamp proving the signature existed at a given moment. It comes
-from a Time-Stamping Authority (TSA) over the network and protects the signature
-even after the signing certificate later expires.
-
-QUALIFIED vs FREE TIMESTAMP
-A free timestamp (Cachet's default, from DigiCert) is technically valid and
-widely trusted. A qualified timestamp comes from an eIDAS-qualified TSA and
-carries stronger legal weight. Both prove "when"; only the qualified one is
-"qualified".
-
-LTV
-Long-Term Validation: enough proof is stored inside the PDF that it can still be
-verified years later, even after the certificates have expired or the issuing
-CA has gone offline.
-
-DSS
-The Document Security Store: the area inside the PDF where LTV evidence
-(certificates and revocation data) is kept so the file is self-contained.
-
-OCSP
-A live online check asking the CA "is this certificate still valid right now, or
-was it revoked?". The answer is saved in the DSS for LTV.
-
-CRL
-Certificate Revocation List: a published list of certificates the CA has
-cancelled. An alternative to OCSP for proving a certificate was still good when
-used; also stored for LTV.
-
-EU TRUSTED LIST (LOTL)
-The official EU list of trusted qualified providers (the List of Trusted Lists).
-eID (QES) trust ultimately traces here. Azure (AES) does NOT: it is trusted via
-your organisation's internal CA instead.
-
-INTERNAL CA
-Your organisation's own Certificate Authority. In azure mode, trust and LTV are
-anchored on this internal CA chain (a PEM file you provide), not on the EU
-Trusted List.
-
-VIGNETTE
-The small visible stamp Cachet draws on the page in eID mode: the cardholder's
-photo, "Signed by:", the name and the date. It is the human-readable face of an
-otherwise invisible cryptographic signature.
-
-TEMPLATE VALIDATION
-A safety check: before signing, every input PDF is compared to a model
-("template") and must have the same page count and identical page sizes. This
-guarantees the signature lands in the right spot on every file in the batch.
-When some files have a DIFFERENT page count (e.g. scanned annexes were added),
-a selector appears at the validation step: every file is then signed on its
-own first or last page — that page must still have exactly the template's page
-size, so the position you pick at the placement step is guaranteed to fit.
-
-B-LTA RENEWAL
-B-LTA (the default level) adds an archival timestamp chain so the evidence stays
-provable for decades. "Renewal" means that, every few years, a fresh archive
-timestamp must be added before the previous one's protection weakens.
-
-
-PAdES LEVELS, AT A GLANCE
-• B-B: basic signature, fully offline.
-• B-T: adds a trusted timestamp (network needed).
-• B-LT: adds revocation info and CA certs (LTV).
-• B-LTA: adds the archival timestamp chain (default).
-
-Cachet never silently downgrades these levels. If the network is unavailable
-and the requested level cannot be reached, it tells you rather than quietly
-producing a weaker signature.
-"""
+_COL_CARD_BG = ("#e3f3e6", "#1e3a26")    # step-7 "insert your eID card" box
+_COL_CARD_FG = ("#1d4d2a", "#bfe3c6")
+_COL_LINK = ("#1a5fb4", "#78aeed")       # documentation links (light, dark)
 
 
 def _alive(widget) -> bool:
@@ -297,6 +82,39 @@ def _alive(widget) -> bool:
         return bool(widget and widget.winfo_exists())
     except Exception:  # noqa: BLE001 - interpreter shutting down, etc.
         return False
+
+
+def _bold_tag(box) -> None:
+    """(Re)define the "bold" text tag on a CTkTextbox. ``CTkTextbox.tag_config``
+    refuses ``font`` (its scaling guard), so the tag goes on the inner
+    ``tk.Text``, as a bold copy of the font the body uses at that moment —
+    already DPI-scaled by CustomTkinter. It is re-derived on every fill
+    (help panel: each step change) and at popup creation, so a DPI change
+    is picked up at the next rebuild rather than tracked live. The Font
+    object is pinned on the box: tkinter deletes a named font it created as
+    soon as the Python object is garbage-collected."""
+    inner = getattr(box, "_textbox", box)
+    bold = tkfont.Font(font=inner.cget("font")).copy()
+    bold.configure(weight="bold")
+    box._cachet_bold_font = bold                # noqa: SLF001 - keep-alive ref
+    inner.tag_config("bold", font=bold)
+
+
+def _insert_markup(box, text: str) -> None:
+    """Append ``text`` to a CTkTextbox, rendering the catalog's light
+    ``**bold**`` markup (i18n.split_markup) through the "bold" tag (see
+    ``_bold_tag``). The caller unlocks/locks the box."""
+    for segment, bold in i18n.split_markup(text):
+        box.insert("end", segment, ("bold",) if bold else ())
+
+
+def _fill_textbox(box, text: str) -> None:
+    """Replace a read-only CTkTextbox's content with marked-up ``text``."""
+    box.configure(state="normal")
+    box.delete("1.0", "end")
+    _bold_tag(box)
+    _insert_markup(box, text)
+    box.configure(state="disabled")
 
 
 class CachetApp(ctk.CTk):
@@ -349,6 +167,7 @@ class CachetApp(ctk.CTk):
 
     def _reset_state(self) -> None:
         """Back to a blank wizard (fresh Start, Cancel, or Finish)."""
+        self._close_docs_popup()                   # it belongs to the old wizard
         self.template_path: Path | None = None
         self.template_dims: list[tuple[float, float]] = []
         self.template_error: str | None = None
@@ -417,7 +236,7 @@ class CachetApp(ctk.CTk):
         )
         self._lang_menu.set(i18n.LANGUAGE_NAMES[i18n.get_language()])
         self._lang_menu.pack(side="right", padx=8)
-        ctk.CTkLabel(top, text=tr("landing.language") + ":").pack(side="right", padx=(0, 2))
+        ctk.CTkLabel(top, text=tr("landing.language_label")).pack(side="right", padx=(0, 2))
 
         # Center: overview of what the app does.
         body = ctk.CTkFrame(page, fg_color="transparent")
@@ -437,13 +256,36 @@ class CachetApp(ctk.CTk):
                       font=ctk.CTkFont(size=15, weight="bold"),
                       command=self._start_wizard).pack(side="right", pady=8)
 
-    def _on_language_change(self, display_name: str) -> None:
+    @staticmethod
+    def _language_code(display_name: str) -> str | None:
         for code, name in i18n.LANGUAGE_NAMES.items():
             if name == display_name:
-                i18n.set_language(code)
-                break
+                return code
+        return None
+
+    def _on_language_change(self, display_name: str) -> None:
+        code = self._language_code(display_name)
+        if code:
+            i18n.set_language(code)
         self._apply_title()
+        self._close_docs_popup()                   # its text is language-bound
         self._show_landing()   # re-render the landing texts
+
+    def _on_wizard_language_change(self, display_name: str) -> None:
+        """Language switch from inside the wizard. Widgets are disposable and
+        all state lives on the app, so the chrome and the current step are
+        simply rebuilt in place — nothing the user entered is lost. Ignored
+        while a batch runs (the menu is disabled then anyway)."""
+        code = self._language_code(display_name)
+        if self._running or code is None:
+            return
+        if code != i18n.get_language():
+            i18n.set_language(code)
+            self._apply_title()
+            self._close_docs_popup()            # its text is language-bound
+        step = self.step_index
+        self._build_wizard()
+        self._goto_step(step)      # the current step is always re-enterable
 
     def _start_wizard(self) -> None:
         self._reset_state()
@@ -456,7 +298,20 @@ class CachetApp(ctk.CTk):
         outer = ctk.CTkFrame(self._screen, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=12, pady=(10, 8))
 
-        # --- stepper bar (top) -------------------------------------------
+        # --- top bar: language selector, reachable from every step -------
+        top = ctk.CTkFrame(outer, fg_color="transparent")
+        top.pack(fill="x")
+        self._wizard_lang_menu = ctk.CTkOptionMenu(
+            top, width=150,
+            values=[i18n.LANGUAGE_NAMES[c] for c in i18n.LANGUAGES],
+            command=self._on_wizard_language_change,
+        )
+        self._wizard_lang_menu.set(i18n.LANGUAGE_NAMES[i18n.get_language()])
+        self._wizard_lang_menu.pack(side="right", padx=8, pady=(0, 6))
+        ctk.CTkLabel(top, text=tr("landing.language_label")
+                     ).pack(side="right", padx=(0, 2), pady=(0, 6))
+
+        # --- stepper bar -------------------------------------------------
         stepper = ctk.CTkFrame(outer)
         stepper.pack(fill="x")
         self._stepper_btns = []
@@ -497,6 +352,7 @@ class CachetApp(ctk.CTk):
                      ).pack(anchor="w", padx=12, pady=(10, 2))
         self._help_box = ctk.CTkTextbox(right, wrap="word", font=ctk.CTkFont(size=12))
         self._help_box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        _bold_tag(self._help_box)
         self._help_box.configure(state="disabled")
 
         left = ctk.CTkFrame(body)
@@ -518,7 +374,11 @@ class CachetApp(ctk.CTk):
         if self._running or not self._stepper_btns:
             return
         idx = max(0, min(len(_STEP_KEYS) - 1, idx))
-        if idx > self._first_incomplete():          # inaccessible (locked)
+        # Steps beyond the first incomplete one are locked — except that
+        # going BACK from the current step is always allowed: the step-6
+        # selector can re-validate step 3 down to zero accepted files while
+        # the user stands on step 6, and they must be able to retreat.
+        if idx > max(self._first_incomplete(), self.step_index):
             return
         self.step_index = idx
         key = _STEP_KEYS[idx]
@@ -528,10 +388,7 @@ class CachetApp(ctk.CTk):
         self._step_header.configure(text=tr(
             "step.header", n=idx + 1, total=len(_STEP_KEYS),
             title=tr(f"step.{key}.title")))
-        self._help_box.configure(state="normal")
-        self._help_box.delete("1.0", "end")
-        self._help_box.insert("1.0", tr(f"step.{key}.help"))
-        self._help_box.configure(state="disabled")
+        _fill_textbox(self._help_box, tr(f"step.{key}.help"))
         getattr(self, f"_build_step_{key}")(self._content_left)
         if key == "validate" and self.validation_results is None:
             self._validate()                        # auto-run on first entry
@@ -655,7 +512,8 @@ class CachetApp(ctk.CTk):
             return
         first_inc = self._first_incomplete()
         for i, btn in enumerate(self._stepper_btns):
-            accessible = (i == self.step_index) if self._running else (i <= first_inc)
+            accessible = (i == self.step_index) if self._running else (
+                i <= max(first_inc, self.step_index))   # current + backwards
             error = self._step_error(i) is not None
             # "Completed" (green) only applies to steps the user has passed:
             # a step beyond the first incomplete one is merely unreached,
@@ -690,11 +548,17 @@ class CachetApp(ctk.CTk):
                 text=tr("nav.finish"),
                 state="disabled" if self._running else "normal")
         else:
-            can_next = self._step_complete(i) and not self._running
+            # Next needs the current step AND everything upstream complete:
+            # the step-6 first/last selector re-validates step 3, possibly
+            # down to zero accepted documents, which must lock the way on.
+            can_next = i < first_inc and not self._running
             self._btn_next.configure(
                 text=tr("nav.next", step=tr(f"step.{_STEP_KEYS[i + 1]}.title")),
                 state="normal" if can_next else "disabled")
         self._btn_cancel.configure(state="disabled" if self._running else "normal")
+        if _alive(getattr(self, "_wizard_lang_menu", None)):
+            self._wizard_lang_menu.configure(
+                state="disabled" if self._running else "normal")
 
     # ------------------------------------------------------------ tables
     def _make_table(self, parent, columns: list[tuple[str, int]], height: int):
@@ -871,6 +735,7 @@ class CachetApp(ctk.CTk):
         self.valid_paths = [r.path for r in self.validation_results if r.ok]
         self._invalidate_run()
         self._update_validation_widgets()
+        self._update_place_anchor_widgets()
         self._sync_anchor_page()
         self._refresh_chrome()
 
@@ -1040,9 +905,12 @@ class CachetApp(ctk.CTk):
             self.azure_section.pack_forget()
 
     def _show_docs_popup(self) -> None:
-        """'Full documentation' window (English): modes, levels, glossary."""
+        """'Full documentation' window in the active language: the sections
+        of i18n.DOC_SECTIONS (modes, levels, AES vs QES, glossary, levels at
+        a glance) followed by the clickable sources of i18n.DOC_SOURCES
+        (opened in the system browser)."""
         win = getattr(self, "_docs_win", None)
-        if win is not None and win.winfo_exists():
+        if _alive(win):
             win.lift()
             win.focus()
             return
@@ -1051,9 +919,32 @@ class CachetApp(ctk.CTk):
         win.geometry("840x780")
         box = ctk.CTkTextbox(win, wrap="word", font=ctk.CTkFont(size=13))
         box.pack(fill="both", expand=True, padx=12, pady=12)
-        box.insert("1.0", _DOC_PANEL + "\n\n" + _FULL_DOC)
+        dark = ctk.get_appearance_mode() == "Dark"
+        _bold_tag(box)
+        box.tag_config("link", foreground=_COL_LINK[dark], underline=True)
+        box.tag_config("url", foreground="gray55" if dark else "gray40")
+        for key in i18n.DOC_SECTIONS:
+            _insert_markup(box, tr(key))
+            box.insert("end", "\n\n\n")
+        _insert_markup(box, tr("docs.sources_heading"))
+        box.insert("end", "\n\n" + tr("docs.sources_intro") + "\n\n")
+        inner = getattr(box, "_textbox", box)     # the tk.Text, for the cursor
+        for i, (title_key, url) in enumerate(i18n.DOC_SOURCES):
+            tag = f"src{i}"
+            box.insert("end", "• ")
+            box.insert("end", tr(title_key), ("link", tag))
+            box.insert("end", "\n    " + url + "\n", ("url",))
+            box.tag_bind(tag, "<Button-1>", lambda _e, u=url: webbrowser.open(u))
+            box.tag_bind(tag, "<Enter>", lambda _e: inner.configure(cursor="hand2"))
+            box.tag_bind(tag, "<Leave>", lambda _e: inner.configure(cursor=""))
         box.configure(state="disabled")
         self._docs_win = win
+
+    def _close_docs_popup(self) -> None:
+        win = getattr(self, "_docs_win", None)
+        if _alive(win):
+            win.destroy()
+        self._docs_win = None
 
     # ------------------------------------------------------------ azure auth
     def _pick_azure_anchors(self) -> None:
@@ -1120,6 +1011,35 @@ class CachetApp(ctk.CTk):
 
     # =================================================== step 6: placement
     def _build_step_place(self, parent) -> None:
+        # Documents whose page count differs from the template: the same
+        # first/last choice as on the validation step (shared state
+        # `anchor_choice`), mirrored here because it decides which page the
+        # preview locks onto. Built only while a mismatch exists — that fact
+        # depends on the files/template alone, so it cannot change on this
+        # step; switching re-validates and reports the accepted count.
+        self.place_anchor_row = None
+        if self.count_mismatch:
+            self.place_anchor_row = ctk.CTkFrame(parent, fg_color="transparent")
+            self.place_anchor_row.pack(fill="x", pady=(10, 2), padx=8)
+            inner = ctk.CTkFrame(self.place_anchor_row, fg_color="transparent")
+            inner.pack(fill="x")
+            ctk.CTkLabel(inner, text=tr("val.anchor_label"), justify="left",
+                         anchor="w", wraplength=440).pack(side="left")
+            self.place_anchor_menu = ctk.CTkOptionMenu(
+                inner, width=180,
+                values=[tr("anchor.opt_last"), tr("anchor.opt_first")],
+                command=self._on_anchor_menu)
+            self.place_anchor_menu.pack(side="left", padx=8)
+            self.place_anchor_status = ctk.CTkLabel(
+                self.place_anchor_row, text="", justify="left", anchor="w",
+                wraplength=620)
+            self.place_anchor_status.pack(fill="x", pady=(2, 0))
+            ctk.CTkLabel(self.place_anchor_row, text=tr("place.anchor_hint"),
+                         justify="left", anchor="w", wraplength=620,
+                         text_color=("gray25", "gray70"),
+                         font=ctk.CTkFont(size=11)).pack(fill="x")
+            self._update_place_anchor_widgets()
+
         self.image_row = ctk.CTkFrame(parent, fg_color="transparent")
         if self.mode_var.get() == "image":        # image picker: image mode only
             self.image_row.pack(fill="x", pady=(10, 0), padx=8)
@@ -1180,6 +1100,16 @@ class CachetApp(ctk.CTk):
         self.canvas.bind("<Button-1>", self._on_canvas_click)
         self._update_place_labels()
         self._draw_page()
+
+    def _update_place_anchor_widgets(self) -> None:
+        """Refresh the step-6 mirror of the first/last selector (menu text +
+        accepted-count line) after a (re-)validation."""
+        if not _alive(getattr(self, "place_anchor_row", None)):
+            return
+        self.place_anchor_menu.set(tr(f"anchor.opt_{self.anchor_choice}"))
+        self.place_anchor_status.configure(text=tr(
+            "place.anchor_status", ok=len(self.valid_paths),
+            total=len(self.validation_results or [])))
 
     def _pick_image(self) -> None:
         path = filedialog.askopenfilename(
@@ -1409,6 +1339,22 @@ class CachetApp(ctk.CTk):
                          text_color=("gray25", "gray70"),
                          font=ctk.CTkFont(size=11)).pack(anchor="w", pady=(6, 0))
 
+        # eID: green reminder to insert the card BEFORE starting — the batch
+        # opens the PKCS#11 session first thing and fails without a card.
+        # Hidden once the batch starts; shown again if it fails to start.
+        self.card_box = ctk.CTkFrame(parent, fg_color=_COL_CARD_BG,
+                                     border_color=_COL_DONE, border_width=2,
+                                     corner_radius=8)
+        ctk.CTkLabel(self.card_box, text=tr("run.card_title"),
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=_COL_CARD_FG, anchor="w"
+                     ).pack(anchor="w", padx=14, pady=(8, 0))
+        ctk.CTkLabel(self.card_box, text=tr("run.card_body"), justify="left",
+                     anchor="w", wraplength=560, text_color=_COL_CARD_FG
+                     ).pack(anchor="w", padx=14, pady=(2, 10))
+        if mode == "beid" and self.run_results is None:
+            self._show_card_box()
+
         self.launch_btn = ctk.CTkButton(parent, text=tr("run.start"),
                                         width=240, height=40,
                                         font=ctk.CTkFont(size=14, weight="bold"),
@@ -1429,6 +1375,14 @@ class CachetApp(ctk.CTk):
         elif self.run_error:
             self.run_status_lbl.configure(
                 text=tr("run.error", error=self.run_error))
+
+    def _show_card_box(self) -> None:
+        box = getattr(self, "card_box", None)
+        if not _alive(box) or box.winfo_manager():
+            return
+        launch = getattr(self, "launch_btn", None)
+        kw = {"before": launch} if _alive(launch) else {}   # stays above Start
+        box.pack(anchor="w", fill="x", padx=8, pady=(12, 0), **kw)
 
     def _launch(self) -> None:
         if self._running or not self.valid_paths or not self.output_dir:
@@ -1467,6 +1421,8 @@ class CachetApp(ctk.CTk):
             return
         self._invalidate_run()
         self._running = True
+        if _alive(getattr(self, "card_box", None)):
+            self.card_box.pack_forget()               # the card is in use now
         self.launch_btn.configure(state="disabled")   # avoids concurrent batches
         self.progress.set(0)
         self.run_status_lbl.configure(text=tr("run.working"))
@@ -1518,6 +1474,8 @@ class CachetApp(ctk.CTk):
                     self._running = False
                     if _alive(getattr(self, "launch_btn", None)):
                         self.launch_btn.configure(state="normal")
+                    if self.mode_var.get() == "beid":
+                        self._show_card_box()         # e.g. "no card": retry
                     if _alive(getattr(self, "run_status_lbl", None)):
                         self.run_status_lbl.configure(
                             text=tr("run.error", error=payload))
@@ -1562,6 +1520,29 @@ class CachetApp(ctk.CTk):
                 "", "end",
                 values=(r.path.name, tr("res.ok") if r.ok else tr("res.fail"),
                         r.detail))
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=8, pady=(6, 4))
+        self.open_folder_btn = ctk.CTkButton(
+            row, text=tr("res.open_folder"), width=220,
+            command=self._open_output_folder)
+        self.open_folder_btn.pack(side="left")
+        self.open_folder_lbl = ctk.CTkLabel(row, text="", anchor="w",
+                                            justify="left", wraplength=400,
+                                            text_color=("#b3261e", "#e08a8a"))
+        self.open_folder_lbl.pack(side="left", padx=12)
+
+    def _open_output_folder(self) -> None:
+        """Show the signed files in the OS file manager (core helper); a
+        failure is reported inline, never raised into the Tk loop."""
+        if not self.output_dir:
+            return
+        try:
+            core.open_in_file_manager(self.output_dir)
+            msg = ""
+        except Exception as exc:  # noqa: BLE001 - xdg-open missing, etc.
+            msg = tr("res.open_folder_failed", error=exc)
+        if _alive(getattr(self, "open_folder_lbl", None)):
+            self.open_folder_lbl.configure(text=msg)
 
 
 def launch_gui(args) -> int:

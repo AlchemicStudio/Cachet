@@ -15,11 +15,19 @@ Every key carries all six languages (EN default/fallback, FR, NL, DE, ES,
 PT); ``test_i18n.py`` enforces catalog completeness and that the ``{...}``
 placeholders of every translation match the English reference. Texts only
 use braces for placeholders — ``tr`` formats when kwargs are passed.
+
+Texts may carry a light ``**bold**`` markup (help panel, documentation);
+``split_markup`` turns it into segments the GUI renders through text tags.
+The long-form documentation of the "Full documentation" popup lives in
+``i18n_docs.py`` (``DOCS_CATALOG``) and is merged into ``CATALOG`` below, so
+the same invariants and ``tr()`` apply to it.
 """
 
 from __future__ import annotations
 
 import os
+
+from i18n_docs import DOCS_CATALOG
 
 #: Supported language codes, in menu order.
 LANGUAGES = ("en", "fr", "nl", "de", "es", "pt")
@@ -87,6 +95,46 @@ def tr(key: str, **fmt) -> str:
         return key
     text = entry.get(_current) or entry[DEFAULT_LANGUAGE]
     return text.format(**fmt) if fmt else text
+
+
+def split_markup(text: str) -> list[tuple[str, bool]]:
+    """Split a catalog text on its light ``**bold**`` markup into
+    ``(segment, is_bold)`` pairs, in order (empty segments dropped). An
+    unpaired trailing ``**`` is kept literally rather than swallowed. Pure,
+    tkinter-free — the GUI maps ``is_bold`` onto a text tag."""
+    parts = text.split("**")
+    if len(parts) % 2 == 0:                 # odd marker count: last one is literal
+        parts[-2:] = [parts[-2] + "**" + parts[-1]]
+    return [(seg, i % 2 == 1) for i, seg in enumerate(parts) if seg]
+
+
+#: Sections of the "Full documentation" popup, in display order (keys of
+#: ``i18n_docs.DOCS_CATALOG``); the clickable sources block follows them.
+DOC_SECTIONS = ("docs.modes", "docs.levels", "docs.tiers", "docs.glossary",
+                "docs.glance")
+
+#: Sources listed at the end of the documentation: (title key, URL). The
+#: URLs are language-independent; only the titles are translated.
+DOC_SOURCES = (
+    ("docs.src.eidas", "https://eur-lex.europa.eu/eli/reg/2014/910/oj"),
+    ("docs.src.pades",
+     "https://www.etsi.org/deliver/etsi_en/319100_319199/31914201/01.01.01_60/en_31914201v010101p.pdf"),
+    ("docs.src.tsl",
+     "https://www.etsi.org/deliver/etsi_ts/119600_119699/119612/02.02.01_60/ts_119612v020201p.pdf"),
+    ("docs.src.tlbrowser", "https://eidas.ec.europa.eu/efda/tl-browser/"),
+    ("docs.src.rfc3161", "https://www.rfc-editor.org/rfc/rfc3161"),
+    ("docs.src.digicert",
+     "https://knowledge.digicert.com/general-information/rfc3161-compliant-time-stamp-authority-server"),
+    ("docs.src.cms", "https://www.rfc-editor.org/rfc/rfc5652"),
+    ("docs.src.ocsp", "https://www.rfc-editor.org/rfc/rfc6960"),
+    ("docs.src.crl", "https://www.rfc-editor.org/rfc/rfc5280"),
+    ("docs.src.beid", "https://eid.belgium.be/en"),
+    ("docs.src.pkcs11",
+     "https://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html"),
+    ("docs.src.keyvault", "https://learn.microsoft.com/azure/key-vault/keys/about-keys"),
+    ("docs.src.entra", "https://learn.microsoft.com/entra/fundamentals/whatis"),
+    ("docs.src.pyhanko", "https://pyhanko.readthedocs.io/"),
+)
 
 
 # =========================================================================
@@ -190,13 +238,13 @@ CATALOG: dict[str, dict[str, str]] = {
             "por fim, assinar e rever o relatório."
         ),
     },
-    "landing.language": {
-        "en": "Language",
-        "fr": "Langue",
-        "nl": "Taal",
-        "de": "Sprache",
-        "es": "Idioma",
-        "pt": "Idioma",
+    "landing.language_label": {
+        "en": "Language:",
+        "fr": "Langue :",
+        "nl": "Taal:",
+        "de": "Sprache:",
+        "es": "Idioma:",
+        "pt": "Idioma:",
     },
     "landing.start": {
         "en": "Start",
@@ -335,25 +383,33 @@ CATALOG: dict[str, dict[str, str]] = {
     "step.template.help": {
         "en": (
             "The template is the reference document: every file you sign is "
-            "compared against it. Choose the blank PDF your documents are "
-            "based on. Its pages also serve as the preview when you place the "
-            "signature later. Only files whose page count and page sizes "
-            "match the template exactly will be signed."
+            "compared against it. Choose the blank PDF your documents are based "
+            "on. Its pages also serve as the preview when you place the "
+            "signature later. Only files whose page count and page sizes match "
+            "the template exactly will be signed.\n\n"
+            "**Only one PDF to sign?** Select that document itself as the "
+            "template: it is then compared with itself and always passes "
+            "validation."
         ),
         "fr": (
             "Le modèle est le document de référence : chaque fichier à signer "
             "lui est comparé. Choisissez le PDF vierge dont vos documents sont "
             "issus. Ses pages servent aussi d'aperçu au moment de positionner "
             "la signature. Seuls les fichiers dont le nombre de pages et les "
-            "dimensions correspondent exactement au modèle seront signés."
+            "dimensions correspondent exactement au modèle seront signés.\n\n"
+            "**Un seul PDF à signer ?** Choisissez ce document comme modèle : "
+            "comparé à lui-même, il réussit toujours la validation."
         ),
         "nl": (
             "Het sjabloon is het referentiedocument: elk te ondertekenen "
             "bestand wordt ermee vergeleken. Kies de lege PDF waarop uw "
             "documenten zijn gebaseerd. De pagina's dienen ook als voorbeeld "
-            "bij het plaatsen van de handtekening. Alleen bestanden waarvan "
-            "het aantal pagina's en de paginagrootte exact met het sjabloon "
-            "overeenkomen, worden ondertekend."
+            "bij het plaatsen van de handtekening. Alleen bestanden waarvan het "
+            "aantal pagina's en de paginagrootte exact met het sjabloon "
+            "overeenkomen, worden ondertekend.\n\n"
+            "**Slechts één PDF te ondertekenen?** Selecteer dat document zelf "
+            "als sjabloon: het wordt dan met zichzelf vergeleken en slaagt "
+            "altijd voor de validatie."
         ),
         "de": (
             "Die Vorlage ist das Referenzdokument: Jede zu signierende Datei "
@@ -361,21 +417,30 @@ CATALOG: dict[str, dict[str, str]] = {
             "Dokumente basieren. Seine Seiten dienen später auch als Vorschau "
             "beim Platzieren der Signatur. Nur Dateien, deren Seitenzahl und "
             "Seitengrößen exakt mit der Vorlage übereinstimmen, werden "
-            "signiert."
+            "signiert.\n\n"
+            "**Nur ein einziges PDF zu signieren?** Wählen Sie dieses Dokument "
+            "selbst als Vorlage: Es wird dann mit sich selbst verglichen und "
+            "besteht die Prüfung immer."
         ),
         "es": (
-            "La plantilla es el documento de referencia: cada archivo a "
-            "firmar se compara con ella. Elija el PDF en blanco del que "
-            "parten sus documentos. Sus páginas sirven además de vista previa "
-            "al colocar la firma. Solo se firmarán los archivos cuyo número "
-            "de páginas y dimensiones coincidan exactamente con la plantilla."
+            "La plantilla es el documento de referencia: cada archivo a firmar "
+            "se compara con ella. Elija el PDF en blanco del que parten sus "
+            "documentos. Sus páginas sirven además de vista previa al colocar "
+            "la firma. Solo se firmarán los archivos cuyo número de páginas y "
+            "dimensiones coincidan exactamente con la plantilla.\n\n"
+            "**¿Solo tiene un PDF que firmar?** Seleccione ese mismo documento "
+            "como plantilla: se comparará consigo mismo y superará siempre la "
+            "validación."
         ),
         "pt": (
             "O modelo é o documento de referência: cada ficheiro a assinar é "
             "comparado com ele. Escolha o PDF em branco na origem dos seus "
             "documentos. As suas páginas servem também de pré-visualização ao "
             "posicionar a assinatura. Só serão assinados os ficheiros cujo "
-            "número de páginas e dimensões correspondam exatamente ao modelo."
+            "número de páginas e dimensões correspondam exatamente ao modelo.\n\n"
+            "**Só tem um PDF para assinar?** Selecione esse mesmo documento "
+            "como modelo: será então comparado consigo próprio e passará sempre "
+            "na validação."
         ),
     },
     "step.files.short": {
@@ -442,69 +507,74 @@ CATALOG: dict[str, dict[str, str]] = {
     },
     "step.validate.help": {
         "en": (
-            "Each document is compared with the template: it must have the "
-            "same number of pages and exactly the same page sizes. Documents "
-            "that differ are rejected and will not be signed. Go back to "
-            "adjust the template or the document list if needed — at least "
-            "one valid document is required to continue. If some documents "
-            "have a different page count, a selector lets you sign each file "
-            "on its own first or last page — that page must still match the "
-            "template exactly."
+            "Each document is compared with the template: ideally it has the "
+            "same number of pages and, above all, exactly the same page sizes. "
+            "If some documents do not have the same number of pages, a selector "
+            "lets you specify **where** the signature goes: on their first or "
+            "their last page. That page must have the **same dimensions** as "
+            "the template. Documents with pages of a different size are "
+            "rejected and will not be signed. Go back to adjust the template or "
+            "the document list if needed. At least one valid document is "
+            "required to continue."
         ),
         "fr": (
-            "Chaque document est comparé au modèle : il doit avoir le même "
-            "nombre de pages et exactement les mêmes dimensions de pages. Les "
-            "documents différents sont rejetés et ne seront pas signés. "
-            "Revenez en arrière pour ajuster le modèle ou la liste des "
-            "documents si nécessaire — au moins un document valide est requis "
-            "pour continuer. Si certains documents n'ont pas le même nombre "
-            "de pages, un sélecteur permet de signer chaque fichier sur sa "
-            "première ou sa dernière page — cette page doit toujours "
-            "correspondre exactement au modèle."
+            "Chaque document est comparé au modèle : il est préférable d'avoir "
+            "le même nombre de pages et surtout exactement les mêmes dimensions "
+            "de pages. Si certains documents n'ont pas le même nombre de pages, "
+            "un sélecteur permet de spécifier **où** placer la signature : sur "
+            "sa première ou sa dernière page. Cette page doit avoir les **mêmes "
+            "dimensions** que le modèle. Les documents avec des pages de "
+            "tailles différentes sont rejetés et ne seront pas signés. Revenez "
+            "en arrière pour ajuster le modèle ou la liste des documents si "
+            "nécessaire. Au moins un document valide est requis pour continuer."
         ),
         "nl": (
-            "Elk document wordt met het sjabloon vergeleken: het moet "
-            "hetzelfde aantal pagina's en exact dezelfde paginagrootten "
-            "hebben. Afwijkende documenten worden geweigerd en niet "
-            "ondertekend. Ga zo nodig terug om het sjabloon of de "
-            "documentlijst aan te passen — er is minstens één geldig document "
-            "nodig om verder te gaan. Als sommige documenten een ander aantal "
-            "pagina's hebben, kunt u met een keuzelijst elk bestand op zijn "
-            "eerste of laatste pagina ondertekenen — die pagina moet nog "
-            "steeds exact met het sjabloon overeenkomen."
+            "Elk document wordt met het sjabloon vergeleken: idealiter heeft "
+            "het hetzelfde aantal pagina's en vooral exact dezelfde "
+            "paginagrootten. Als sommige documenten niet hetzelfde aantal "
+            "pagina's hebben, kunt u met een keuzelijst aangeven **waar** de "
+            "handtekening komt: op hun eerste of hun laatste pagina. Die pagina "
+            "moet **dezelfde paginagrootte** hebben als het sjabloon. "
+            "Documenten met pagina's van een andere grootte worden geweigerd en "
+            "niet ondertekend. Ga zo nodig terug om het sjabloon of de "
+            "documentlijst aan te passen. Er is minstens één geldig document "
+            "nodig om verder te gaan."
         ),
         "de": (
-            "Jedes Dokument wird mit der Vorlage verglichen: Es muss dieselbe "
-            "Seitenzahl und exakt dieselben Seitengrößen haben. Abweichende "
-            "Dokumente werden abgelehnt und nicht signiert. Gehen Sie bei "
-            "Bedarf zurück, um die Vorlage oder die Dokumentliste anzupassen "
-            "— mindestens ein gültiges Dokument ist erforderlich, um "
-            "fortzufahren. Haben einige Dokumente eine andere Seitenzahl, "
-            "lässt ein Auswahlfeld jede Datei auf ihrer ersten oder letzten "
-            "Seite signieren — diese Seite muss weiterhin exakt der Vorlage "
-            "entsprechen."
+            "Jedes Dokument wird mit der Vorlage verglichen: Idealerweise hat "
+            "es dieselbe Seitenzahl und vor allem exakt dieselben Seitengrößen. "
+            "Haben einige Dokumente nicht dieselbe Seitenzahl, können Sie über "
+            "ein Auswahlfeld festlegen, **wo** die Signatur platziert wird: auf "
+            "ihrer ersten oder ihrer letzten Seite. Diese Seite muss **dieselbe "
+            "Seitengröße** wie die Vorlage haben. Dokumente mit Seiten "
+            "abweichender Größe werden abgelehnt und nicht signiert. Gehen Sie "
+            "bei Bedarf zurück, um die Vorlage oder die Dokumentliste "
+            "anzupassen. Mindestens ein gültiges Dokument ist erforderlich, um "
+            "fortzufahren."
         ),
         "es": (
-            "Cada documento se compara con la plantilla: debe tener el mismo "
-            "número de páginas y exactamente las mismas dimensiones. Los "
-            "documentos diferentes se rechazan y no se firmarán. Vuelva atrás "
-            "para ajustar la plantilla o la lista de documentos si es "
-            "necesario — se necesita al menos un documento válido para "
-            "continuar. Si algunos documentos tienen un número de páginas "
-            "distinto, un selector permite firmar cada archivo en su primera "
-            "o última página — esa página debe seguir coincidiendo "
-            "exactamente con la plantilla."
+            "Cada documento se compara con la plantilla: es preferible que "
+            "tenga el mismo número de páginas y, sobre todo, exactamente las "
+            "mismas dimensiones de página. Si algunos documentos no tienen el "
+            "mismo número de páginas, un selector permite especificar **dónde** "
+            "colocar la firma: en su primera o en su última página. Esa página "
+            "debe tener las **mismas dimensiones** que la plantilla. Los "
+            "documentos con páginas de tamaño distinto se rechazan y no se "
+            "firmarán. Vuelva atrás para ajustar la plantilla o la lista de "
+            "documentos si es necesario. Se necesita al menos un documento "
+            "válido para continuar."
         ),
         "pt": (
-            "Cada documento é comparado com o modelo: deve ter o mesmo número "
-            "de páginas e exatamente as mesmas dimensões. Os documentos "
-            "diferentes são rejeitados e não serão assinados. Volte atrás "
-            "para ajustar o modelo ou a lista de documentos, se necessário — "
-            "é preciso pelo menos um documento válido para continuar. Se "
-            "alguns documentos tiverem um número de páginas diferente, um "
-            "seletor permite assinar cada ficheiro na sua primeira ou última "
-            "página — essa página deve continuar a corresponder exatamente "
-            "ao modelo."
+            "Cada documento é comparado com o modelo: é preferível que tenha o "
+            "mesmo número de páginas e, sobretudo, exatamente as mesmas "
+            "dimensões de página. Se alguns documentos não tiverem o mesmo "
+            "número de páginas, um seletor permite especificar **onde** colocar "
+            "a assinatura: na sua primeira ou na sua última página. Essa página "
+            "deve ter as **mesmas dimensões** que o modelo. Os documentos com "
+            "páginas de dimensões diferentes são rejeitados e não serão "
+            "assinados. Volte atrás para ajustar o modelo ou a lista de "
+            "documentos, se necessário. É preciso pelo menos um documento "
+            "válido para continuar."
         ),
     },
     "step.output.short": {
@@ -573,27 +643,26 @@ CATALOG: dict[str, dict[str, str]] = {
     },
     "step.mode.help": {
         "en": (
-            "eID (QES) — a qualified signature with your Belgian identity "
-            "card, legally equivalent to a handwritten one. Needs a card "
-            "reader and one PIN entry per document; your national register "
-            "number is embedded in every signature.\n\n"
-            "Azure (AES) — an advanced signature with your personal "
-            "certificate in Azure Key Vault. One Microsoft sign-in for the "
-            "whole batch, no card; only the document fingerprint ever leaves "
-            "this machine.\n\n"
-            "Image — pastes a picture. NOT a cryptographic signature, no "
-            "legal value; works fully offline.\n\n"
+            "eID (QES) — a qualified signature with your Belgian identity card, "
+            "legally equivalent to a handwritten one. Needs a card reader and "
+            "one PIN entry per document; your national register number is "
+            "embedded in every signature.\n\n"
+            "Azure (AES) — an advanced signature with your personal certificate "
+            "in Azure Key Vault. One Microsoft sign-in for the whole batch, no "
+            "card; only the document fingerprint ever leaves this machine.\n\n"
+            "Image — pastes a picture. NOT a cryptographic signature, no legal "
+            "value; works fully offline.\n\n"
             "The PAdES level sets durability. Keep b-lta: the signature stays "
             "verifiable for decades (needs network). Choose b-b only to sign "
-            "offline. The full glossary is available in English under “Full "
+            "offline. The full documentation — modes, levels, glossary and "
+            "links to the source standards — is available under “Full "
             "documentation”."
         ),
         "fr": (
-            "eID (QES) — signature qualifiée avec votre carte d'identité "
-            "belge, juridiquement équivalente à une signature manuscrite. "
-            "Nécessite un lecteur de carte et un code PIN par document ; "
-            "votre numéro de registre national est intégré dans chaque "
-            "signature.\n\n"
+            "eID (QES) — signature qualifiée avec votre carte d'identité belge, "
+            "juridiquement équivalente à une signature manuscrite. Nécessite un "
+            "lecteur de carte et un code PIN par document ; votre numéro de "
+            "registre national est intégré dans chaque signature.\n\n"
             "Azure (AES) — signature avancée avec votre certificat personnel "
             "dans Azure Key Vault. Une seule connexion Microsoft pour tout le "
             "lot, sans carte ; seule l'empreinte du document quitte cette "
@@ -602,79 +671,81 @@ CATALOG: dict[str, dict[str, str]] = {
             "cryptographique, sans valeur juridique ; fonctionne entièrement "
             "hors ligne.\n\n"
             "Le niveau PAdES règle la durabilité. Gardez b-lta : la signature "
-            "reste vérifiable pendant des décennies (réseau requis). "
-            "Choisissez b-b uniquement pour signer hors ligne. Le glossaire "
-            "complet est disponible en anglais sous « Documentation "
-            "complète »."
+            "reste vérifiable pendant des décennies (réseau requis). Choisissez "
+            "b-b uniquement pour signer hors ligne. La documentation complète — "
+            "modes, niveaux, glossaire et liens vers les normes de référence — "
+            "est disponible sous « Documentation complète »."
         ),
         "nl": (
             "eID (QES) — een gekwalificeerde handtekening met uw Belgische "
             "identiteitskaart, juridisch gelijkwaardig aan een handgeschreven "
-            "handtekening. Vereist een kaartlezer en één pincode per "
-            "document; uw rijksregisternummer wordt in elke handtekening "
-            "opgenomen.\n\n"
+            "handtekening. Vereist een kaartlezer en één pincode per document; "
+            "uw rijksregisternummer wordt in elke handtekening opgenomen.\n\n"
             "Azure (AES) — een geavanceerde handtekening met uw persoonlijke "
             "certificaat in Azure Key Vault. Eén Microsoft-aanmelding voor de "
-            "hele reeks, zonder kaart; alleen de vingerafdruk van het "
-            "document verlaat deze computer.\n\n"
+            "hele reeks, zonder kaart; alleen de vingerafdruk van het document "
+            "verlaat deze computer.\n\n"
             "Afbeelding — plakt een afbeelding. GEEN cryptografische "
-            "handtekening, zonder juridische waarde; werkt volledig "
-            "offline.\n\n"
+            "handtekening, zonder juridische waarde; werkt volledig offline.\n\n"
             "Het PAdES-niveau bepaalt de duurzaamheid. Behoud b-lta: de "
             "handtekening blijft tientallen jaren verifieerbaar (netwerk "
-            "vereist). Kies b-b alleen om offline te ondertekenen. De "
-            "volledige woordenlijst is in het Engels beschikbaar onder "
-            "“Volledige documentatie”."
+            "vereist). Kies b-b alleen om offline te ondertekenen. De volledige "
+            "documentatie — modi, niveaus, woordenlijst en links naar de "
+            "onderliggende normen — is beschikbaar onder 'Volledige "
+            "documentatie'."
         ),
         "de": (
             "eID (QES) — eine qualifizierte Signatur mit Ihrer belgischen "
             "Identitätskarte, rechtlich der handschriftlichen Unterschrift "
             "gleichgestellt. Benötigt einen Kartenleser und eine PIN-Eingabe "
-            "pro Dokument; Ihre nationale Registernummer wird in jede "
-            "Signatur eingebettet.\n\n"
+            "pro Dokument; Ihre nationale Registernummer wird in jede Signatur "
+            "eingebettet.\n\n"
             "Azure (AES) — eine fortgeschrittene Signatur mit Ihrem "
             "persönlichen Zertifikat in Azure Key Vault. Eine einzige "
             "Microsoft-Anmeldung für den ganzen Stapel, ohne Karte; nur der "
             "Fingerabdruck des Dokuments verlässt diesen Rechner.\n\n"
             "Bild — fügt ein Bild ein. KEINE kryptografische Signatur, ohne "
             "Rechtswert; funktioniert vollständig offline.\n\n"
-            "Das PAdES-Niveau bestimmt die Haltbarkeit. Behalten Sie b-lta: "
-            "Die Signatur bleibt über Jahrzehnte prüfbar (Netzwerk "
-            "erforderlich). Wählen Sie b-b nur, um offline zu signieren. Das "
-            "vollständige Glossar ist auf Englisch unter „Vollständige "
-            "Dokumentation“ verfügbar."
+            "Das PAdES-Niveau bestimmt die Haltbarkeit. Behalten Sie b-lta: Die "
+            "Signatur bleibt über Jahrzehnte prüfbar (Netzwerk erforderlich). "
+            "Wählen Sie b-b nur, um offline zu signieren. Die vollständige "
+            "Dokumentation — Modi, Niveaus, Glossar und Links zu den zugrunde "
+            "liegenden Standards — ist unter „Vollständige Dokumentation“ "
+            "verfügbar."
         ),
         "es": (
-            "eID (QES) — firma cualificada con su tarjeta de identidad "
-            "belga, legalmente equivalente a la manuscrita. Requiere un "
-            "lector de tarjetas y un PIN por documento; su número de registro "
-            "nacional se incrusta en cada firma.\n\n"
-            "Azure (AES) — firma avanzada con su certificado personal en "
-            "Azure Key Vault. Un solo inicio de sesión de Microsoft para todo "
-            "el lote, sin tarjeta; solo la huella del documento sale de este "
+            "eID (QES) — firma cualificada con su tarjeta de identidad belga, "
+            "legalmente equivalente a la manuscrita. Requiere un lector de "
+            "tarjetas y un PIN por documento; su número de registro nacional se "
+            "incrusta en cada firma.\n\n"
+            "Azure (AES) — firma avanzada con su certificado personal en Azure "
+            "Key Vault. Un solo inicio de sesión de Microsoft para todo el "
+            "lote, sin tarjeta; solo la huella del documento sale de este "
             "equipo.\n\n"
-            "Imagen — pega una imagen. NO es una firma criptográfica, sin "
-            "valor legal; funciona totalmente sin conexión.\n\n"
+            "Imagen — pega una imagen. NO es una firma criptográfica, sin valor "
+            "legal; funciona totalmente sin conexión.\n\n"
             "El nivel PAdES define la durabilidad. Mantenga b-lta: la firma "
             "seguirá siendo verificable durante décadas (requiere red). Elija "
-            "b-b solo para firmar sin conexión. El glosario completo está "
-            "disponible en inglés en «Documentación completa»."
+            "b-b solo para firmar sin conexión. La documentación completa — "
+            "modos, niveles, glosario y enlaces a las normas de referencia — "
+            "está disponible en «Documentación completa»."
         ),
         "pt": (
-            "eID (QES) — assinatura qualificada com o seu cartão de "
-            "identidade belga, juridicamente equivalente à manuscrita. Requer "
-            "um leitor de cartões e um PIN por documento; o seu número de "
-            "registo nacional é incorporado em cada assinatura.\n\n"
-            "Azure (AES) — assinatura avançada com o seu certificado pessoal "
-            "no Azure Key Vault. Um único início de sessão Microsoft para "
-            "todo o lote, sem cartão; apenas a impressão digital do documento "
-            "sai deste computador.\n\n"
-            "Imagem — cola uma imagem. NÃO é uma assinatura criptográfica, "
-            "sem valor legal; funciona totalmente offline.\n\n"
-            "O nível PAdES define a durabilidade. Mantenha b-lta: a "
-            "assinatura permanece verificável durante décadas (requer rede). "
-            "Escolha b-b apenas para assinar offline. O glossário completo "
-            "está disponível em inglês em «Documentação completa»."
+            "eID (QES) — assinatura qualificada com o seu cartão de identidade "
+            "belga, juridicamente equivalente à manuscrita. Requer um leitor de "
+            "cartões e um PIN por documento; o seu número de registo nacional é "
+            "incorporado em cada assinatura.\n\n"
+            "Azure (AES) — assinatura avançada com o seu certificado pessoal no "
+            "Azure Key Vault. Um único início de sessão Microsoft para todo o "
+            "lote, sem cartão; apenas a impressão digital do documento sai "
+            "deste computador.\n\n"
+            "Imagem — cola uma imagem. NÃO é uma assinatura criptográfica, sem "
+            "valor legal; funciona totalmente offline.\n\n"
+            "O nível PAdES define a durabilidade. Mantenha b-lta: a assinatura "
+            "permanece verificável durante décadas (requer rede). Escolha b-b "
+            "apenas para assinar offline. A documentação completa — modos, "
+            "níveis, glossário e ligações para as normas de referência — está "
+            "disponível em «Documentação completa»."
         ),
     },
     "step.place.short": {
@@ -692,74 +763,129 @@ CATALOG: dict[str, dict[str, str]] = {
     "step.place.help": {
         "en": (
             "Click on the page preview to set the lower-left corner of the "
-            "signature. In eID and Azure modes you may skip this: the "
-            "vignette then goes bottom-right on the last page. The target "
-            "page field selects the page that actually gets signed — adjust "
-            "it if a document must be signed on a different page than the "
-            "previewed template page. Documents without that page will fail "
-            "with a clear message. While the first/last-page choice from the "
-            "validation step applies, the preview is locked on that page and "
-            "the target-page field is disabled."
+            "signature. **eID and Azure**: the visible vignette (photo, name, "
+            "date) is placed exactly where you click, on the chosen page; if "
+            "you do not click, it goes bottom-right on the last page. "
+            "**Image**: choose the image, then click to place it.\n\n"
+            "**Target page** — the page that actually gets signed. It follows "
+            "the preview; adjust it if a document must be signed on a different "
+            "page than the previewed template page. Documents without that page "
+            "will fail with a clear message.\n\n"
+            "**Documents with a different page count** — when some documents "
+            "have more or fewer pages than the template, a selector at the top "
+            "of this step lets you choose whether each of them is signed on its "
+            "**first** or its **last** page (the same choice as on the "
+            "validation step). That page must have the template's page size: "
+            "the preview is locked on the corresponding template page, the "
+            "target-page field is disabled, and changing the choice re-checks "
+            "the documents."
         ),
         "fr": (
             "Cliquez sur l'aperçu de la page pour définir le coin inférieur "
-            "gauche de la signature. En modes eID et Azure, vous pouvez "
-            "ignorer cette étape : la vignette ira alors en bas à droite de "
-            "la dernière page. Le champ « page cible » désigne la page "
-            "réellement signée — ajustez-le si un document doit être signé "
-            "sur une autre page que celle du modèle affiché. Les documents "
-            "sans cette page échoueront avec un message clair. Tant que le "
-            "choix première/dernière page de l'étape de validation "
-            "s'applique, l'aperçu est verrouillé sur cette page et le champ "
-            "« page cible » est désactivé."
+            "gauche de la signature. **eID et Azure** : la vignette visible "
+            "(photo, nom, date) est placée exactement à l'endroit où vous "
+            "cliquez, sur la page choisie ; si vous ne cliquez pas, elle ira en "
+            "bas à droite de la dernière page. **Image** : choisissez l'image, "
+            "puis cliquez pour la positionner.\n\n"
+            "**Page cible** — la page réellement signée. Elle suit l'aperçu ; "
+            "ajustez-la si un document doit être signé sur une autre page que "
+            "celle du modèle affiché. Les documents sans cette page échoueront "
+            "avec un message clair.\n\n"
+            "**Documents dont le nombre de pages diffère** — lorsque certains "
+            "documents comptent plus ou moins de pages que le modèle, un "
+            "sélecteur en haut de cette étape permet de choisir si chacun d'eux "
+            "est signé sur sa **première** ou sa **dernière** page (le même "
+            "choix qu'à l'étape de validation). Cette page doit avoir les mêmes "
+            "dimensions que le modèle : l'aperçu est verrouillé sur la page "
+            "correspondante du modèle, le champ « page cible » est désactivé et "
+            "tout changement de ce choix revérifie les documents."
         ),
         "nl": (
             "Klik op het paginavoorbeeld om de linkerbenedenhoek van de "
-            "handtekening te bepalen. In de modi eID en Azure mag u dit "
-            "overslaan: het vignet komt dan rechtsonder op de laatste pagina. "
-            "Het veld 'doelpagina' bepaalt welke pagina daadwerkelijk wordt "
-            "ondertekend — pas het aan als een document op een andere pagina "
-            "moet worden ondertekend dan de getoonde sjabloonpagina. "
-            "Documenten zonder die pagina zullen mislukken met een duidelijke "
-            "melding. Zolang de keuze eerste/laatste pagina uit de "
-            "validatiestap geldt, is het voorbeeld op die pagina vergrendeld "
-            "en is het veld 'doelpagina' uitgeschakeld."
+            "handtekening te bepalen. **eID en Azure**: het zichtbare vignet "
+            "(foto, naam, datum) wordt op de gekozen pagina precies daar "
+            "geplaatst waar u klikt; klikt u niet, dan komt het rechtsonder op "
+            "de laatste pagina. **Afbeelding**: kies de afbeelding en klik "
+            "daarna om ze te plaatsen.\n\n"
+            "**Doelpagina** — de pagina die daadwerkelijk wordt ondertekend. "
+            "Dit veld volgt het voorbeeld; pas het aan als een document op een "
+            "andere pagina moet worden ondertekend dan de getoonde "
+            "sjabloonpagina. Documenten zonder die pagina zullen mislukken met "
+            "een duidelijke melding.\n\n"
+            "**Documenten met een ander aantal pagina's** — wanneer sommige "
+            "documenten meer of minder pagina's hebben dan het sjabloon, kunt u "
+            "met een keuzelijst bovenaan deze stap kiezen of elk van die "
+            "documenten op zijn **eerste** of zijn **laatste** pagina wordt "
+            "ondertekend (dezelfde keuze als in de validatiestap). Die pagina "
+            "moet de paginagrootte van het sjabloon hebben: het voorbeeld is "
+            "vergrendeld op de overeenkomstige sjabloonpagina, het veld "
+            "'Doelpagina' is uitgeschakeld en als u de keuze wijzigt, worden de "
+            "documenten opnieuw gecontroleerd."
         ),
         "de": (
             "Klicken Sie auf die Seitenvorschau, um die linke untere Ecke der "
-            "Signatur festzulegen. In den Modi eID und Azure können Sie dies "
-            "überspringen: Die Vignette kommt dann unten rechts auf die "
-            "letzte Seite. Das Feld „Zielseite“ bestimmt die tatsächlich "
-            "signierte Seite — passen Sie es an, wenn ein Dokument auf einer "
+            "Signatur festzulegen. **eID und Azure**: Die sichtbare Vignette "
+            "(Foto, Name, Datum) wird auf der gewählten Seite genau dort "
+            "platziert, wo Sie klicken; ohne Klick kommt sie unten rechts auf "
+            "die letzte Seite. **Bild**: Wählen Sie das Bild und klicken Sie "
+            "dann, um es zu platzieren.\n\n"
+            "**Zielseite** — die Seite, die tatsächlich signiert wird. Sie "
+            "folgt der Vorschau; passen Sie sie an, wenn ein Dokument auf einer "
             "anderen Seite signiert werden soll als der angezeigten "
             "Vorlagenseite. Dokumente ohne diese Seite schlagen mit einer "
-            "klaren Meldung fehl. Solange die Wahl erste/letzte Seite aus dem "
-            "Prüfschritt gilt, ist die Vorschau auf dieser Seite gesperrt und "
-            "das Feld „Zielseite“ deaktiviert."
+            "klaren Meldung fehl.\n\n"
+            "**Dokumente mit abweichender Seitenzahl** — haben einige Dokumente "
+            "mehr oder weniger Seiten als die Vorlage, können Sie über ein "
+            "Auswahlfeld oben in diesem Schritt festlegen, ob jedes davon auf "
+            "seiner **ersten** oder seiner **letzten** Seite signiert wird "
+            "(dieselbe Wahl wie im Prüfschritt). Diese Seite muss die "
+            "Seitengröße der Vorlage haben: Die Vorschau ist auf der "
+            "entsprechenden Vorlagenseite gesperrt, das Feld „Zielseite“ ist "
+            "deaktiviert, und bei einer Änderung der Wahl werden die Dokumente "
+            "erneut geprüft."
         ),
         "es": (
-            "Haga clic en la vista previa para fijar la esquina inferior "
-            "izquierda de la firma. En los modos eID y Azure puede omitirlo: "
-            "la viñeta irá entonces abajo a la derecha en la última página. "
-            "El campo «página de destino» selecciona la página que realmente "
-            "se firma — ajústelo si un documento debe firmarse en una página "
-            "distinta de la mostrada. Los documentos sin esa página fallarán "
-            "con un mensaje claro. Mientras se aplique la elección de "
-            "primera/última página del paso de validación, la vista previa "
-            "queda bloqueada en esa página y el campo «página de destino» "
-            "está desactivado."
+            "Haga clic en la vista previa de la página para fijar la esquina "
+            "inferior izquierda de la firma. **eID y Azure**: la viñeta visible "
+            "(foto, nombre, fecha) se coloca exactamente donde haga clic, en la "
+            "página elegida; si no hace clic, irá abajo a la derecha en la "
+            "última página. **Imagen**: elija la imagen y luego haga clic para "
+            "colocarla.\n\n"
+            "**Página de destino** — la página que realmente se firma. Se "
+            "actualiza con la vista previa; ajústela si un documento debe "
+            "firmarse en una página distinta de la página de la plantilla "
+            "mostrada. Los documentos sin esa página fallarán con un mensaje "
+            "claro.\n\n"
+            "**Documentos con un número de páginas distinto** — cuando algunos "
+            "documentos tienen más o menos páginas que la plantilla, un "
+            "selector en la parte superior de este paso le permite elegir si "
+            "cada uno de ellos se firma en su **primera** o en su **última** "
+            "página (la misma elección que en el paso de validación). Esa "
+            "página debe tener el tamaño de página de la plantilla: la vista "
+            "previa queda bloqueada en la página correspondiente de la "
+            "plantilla, el campo «Página de destino» se desactiva y cambiar la "
+            "elección vuelve a comprobar los documentos."
         ),
         "pt": (
-            "Clique na pré-visualização para definir o canto inferior "
-            "esquerdo da assinatura. Nos modos eID e Azure pode saltar este "
-            "passo: a vinheta ficará em baixo à direita na última página. O "
-            "campo «página de destino» seleciona a página realmente assinada "
-            "— ajuste-o se um documento tiver de ser assinado numa página "
-            "diferente da mostrada. Os documentos sem essa página falharão "
-            "com uma mensagem clara. Enquanto a escolha primeira/última "
-            "página do passo de validação se aplicar, a pré-visualização fica "
-            "bloqueada nessa página e o campo «página de destino» fica "
-            "desativado."
+            "Clique na pré-visualização da página para definir o canto inferior "
+            "esquerdo da assinatura. **eID e Azure**: a vinheta visível "
+            "(fotografia, nome, data) é colocada exatamente onde clicar, na "
+            "página escolhida; se não clicar, ficará em baixo à direita na "
+            "última página. **Imagem**: escolha a imagem e depois clique para a "
+            "posicionar.\n\n"
+            "**Página de destino** — a página realmente assinada. Segue a "
+            "pré-visualização; ajuste-a se um documento tiver de ser assinado "
+            "numa página diferente da página do modelo apresentada na "
+            "pré-visualização. Os documentos sem essa página falharão com uma "
+            "mensagem clara.\n\n"
+            "**Documentos com um número de páginas diferente** — quando alguns "
+            "documentos têm mais ou menos páginas do que o modelo, um seletor "
+            "no topo deste passo permite escolher se cada um deles é assinado "
+            "na sua **primeira** ou na sua **última** página (a mesma escolha "
+            "que no passo de validação). Essa página deve ter as dimensões de "
+            "página do modelo: a pré-visualização fica bloqueada na página "
+            "correspondente do modelo, o campo «página de destino» fica "
+            "desativado e alterar a escolha volta a verificar os documentos."
         ),
     },
     "step.run.short": {
@@ -776,52 +902,59 @@ CATALOG: dict[str, dict[str, str]] = {
     },
     "step.run.help": {
         "en": (
-            "Check the summary, then start the batch. eID mode asks for your "
-            "PIN once per document; Azure mode may open a Microsoft sign-in "
-            "window if you have not signed in yet. Levels above b-b contact "
-            "the timestamp authority and revocation services, so network "
-            "access is required. Keep the window open while signing is in "
-            "progress."
+            "Check the summary, then start the batch. **eID**: insert your "
+            "identity card in the reader before pressing Start — your PIN is "
+            "asked once per document. **Azure**: a Microsoft sign-in window may "
+            "open if you have not signed in yet. Levels above b-b contact the "
+            "timestamp authority and revocation services, so network access is "
+            "required. Keep the window open while signing is in progress."
         ),
         "fr": (
-            "Vérifiez le récapitulatif, puis lancez le lot. Le mode eID "
-            "demande votre PIN une fois par document ; le mode Azure peut "
-            "ouvrir une fenêtre de connexion Microsoft si vous n'êtes pas "
-            "encore connecté. Au-delà de b-b, l'autorité d'horodatage et les "
-            "services de révocation sont contactés : un accès réseau est "
-            "requis. Gardez la fenêtre ouverte pendant la signature."
+            "Vérifiez le récapitulatif, puis lancez le lot. **eID** : insérez "
+            "votre carte d'identité dans le lecteur avant d'appuyer sur « "
+            "Lancer la signature » — votre code PIN est demandé une fois par "
+            "document. **Azure** : une fenêtre de connexion Microsoft peut "
+            "s'ouvrir si vous n'êtes pas encore connecté. Au-delà de b-b, "
+            "l'autorité d'horodatage et les services de révocation sont "
+            "contactés : un accès réseau est requis. Gardez la fenêtre ouverte "
+            "pendant la signature."
         ),
         "nl": (
-            "Controleer het overzicht en start de reeks. De eID-modus vraagt "
-            "uw pincode één keer per document; de Azure-modus kan een "
-            "Microsoft-aanmeldvenster openen als u nog niet bent aangemeld. "
-            "Boven b-b worden de tijdstempelautoriteit en de "
-            "intrekkingsdiensten gecontacteerd: netwerktoegang is vereist. "
-            "Houd het venster open zolang het ondertekenen bezig is."
+            "Controleer het overzicht en start de reeks. **eID**: steek uw "
+            "identiteitskaart in de kaartlezer voordat u op 'Ondertekenen "
+            "starten' drukt — uw pincode wordt één keer per document gevraagd. "
+            "**Azure**: er kan een Microsoft-aanmeldvenster verschijnen als u "
+            "nog niet bent aangemeld. Boven b-b worden de tijdstempelautoriteit "
+            "en de intrekkingsdiensten gecontacteerd: netwerktoegang is "
+            "vereist. Houd het venster open zolang het ondertekenen bezig is."
         ),
         "de": (
-            "Prüfen Sie die Übersicht und starten Sie den Stapel. Der "
-            "eID-Modus fragt Ihre PIN einmal pro Dokument ab; der Azure-Modus "
-            "kann ein Microsoft-Anmeldefenster öffnen, falls Sie noch nicht "
-            "angemeldet sind. Oberhalb von b-b werden Zeitstempel- und "
-            "Sperrdienste kontaktiert: Netzwerkzugang ist erforderlich. "
-            "Lassen Sie das Fenster geöffnet, solange signiert wird."
+            "Prüfen Sie die Übersicht und starten Sie den Stapel. **eID**: "
+            "Stecken Sie Ihre Identitätskarte in den Kartenleser, bevor Sie auf "
+            "„Signieren starten“ klicken — Ihre PIN wird einmal pro Dokument "
+            "abgefragt. **Azure**: Ein Microsoft-Anmeldefenster kann sich "
+            "öffnen, falls Sie noch nicht angemeldet sind. Oberhalb von b-b "
+            "werden Zeitstempel- und Sperrdienste kontaktiert: Netzwerkzugang "
+            "ist erforderlich. Lassen Sie das Fenster geöffnet, solange "
+            "signiert wird."
         ),
         "es": (
-            "Compruebe el resumen y lance el lote. El modo eID pide su PIN "
-            "una vez por documento; el modo Azure puede abrir una ventana de "
-            "inicio de sesión de Microsoft si aún no ha iniciado sesión. Por "
-            "encima de b-b se contacta con la autoridad de sellado de tiempo "
-            "y los servicios de revocación: se necesita acceso a la red. "
-            "Mantenga la ventana abierta mientras se firma."
+            "Compruebe el resumen y lance el lote. **eID**: inserte su tarjeta "
+            "de identidad en el lector antes de pulsar «Iniciar la firma» — el "
+            "PIN se le pedirá una vez por documento. **Azure**: puede abrirse "
+            "una ventana de inicio de sesión de Microsoft si aún no ha iniciado "
+            "sesión. Por encima de b-b se contacta con la autoridad de sellado "
+            "de tiempo y los servicios de revocación: se necesita acceso a la "
+            "red. Mantenga la ventana abierta mientras se firma."
         ),
         "pt": (
-            "Verifique o resumo e inicie o lote. O modo eID pede o PIN uma "
-            "vez por documento; o modo Azure pode abrir uma janela de início "
-            "de sessão Microsoft se ainda não tiver iniciado sessão. Acima de "
-            "b-b são contactados a autoridade de selos temporais e os "
-            "serviços de revogação: é necessário acesso à rede. Mantenha a "
-            "janela aberta enquanto a assinatura decorre."
+            "Verifique o resumo e inicie o lote. **eID**: insira o seu cartão "
+            "de identidade no leitor antes de premir «Iniciar a assinatura» — o "
+            "PIN é pedido uma vez por documento. **Azure**: pode abrir-se uma "
+            "janela de início de sessão Microsoft se ainda não tiver iniciado "
+            "sessão. Acima de b-b são contactados a autoridade de selos "
+            "temporais e os serviços de revogação: é necessário acesso à rede. "
+            "Mantenha a janela aberta enquanto a assinatura decorre."
         ),
     },
     "step.results.short": {
@@ -838,47 +971,54 @@ CATALOG: dict[str, dict[str, str]] = {
     },
     "step.results.help": {
         "en": (
-            "Every document of the batch is listed with its outcome. "
-            "Successful lines show the achieved signature level and, where "
-            "applicable, the long-term-validation status. Failed lines "
-            "explain the reason; those documents were not signed. Finish "
-            "returns to the welcome screen."
+            "Every document of the batch is listed with its outcome. Successful "
+            "lines show the achieved signature level and, where applicable, the "
+            "long-term-validation status. Failed lines explain the reason; "
+            "those documents were not signed. **Open output folder** shows the "
+            "signed files in your file manager. Finish returns to the welcome "
+            "screen."
         ),
         "fr": (
             "Chaque document du lot est listé avec son résultat. Les lignes "
             "réussies indiquent le niveau de signature atteint et, le cas "
-            "échéant, l'état de la validation à long terme. Les lignes en "
-            "échec expliquent la raison ; ces documents n'ont pas été signés. "
-            "« Terminer » revient à l'écran d'accueil."
+            "échéant, l'état de la validation à long terme. Les lignes en échec "
+            "expliquent la raison ; ces documents n'ont pas été signés. "
+            "**Ouvrir le dossier de sortie** affiche les fichiers signés dans "
+            "votre gestionnaire de fichiers. « Terminer » revient à l'écran "
+            "d'accueil."
         ),
         "nl": (
             "Elk document van de reeks staat vermeld met zijn resultaat. "
-            "Geslaagde regels tonen het bereikte handtekeningniveau en, "
-            "indien van toepassing, de status van de langetermijnvalidatie. "
-            "Mislukte regels geven de reden; die documenten zijn niet "
-            "ondertekend. 'Voltooien' keert terug naar het welkomstscherm."
+            "Geslaagde regels tonen het bereikte handtekeningniveau en, indien "
+            "van toepassing, de status van de langetermijnvalidatie. Mislukte "
+            "regels geven de reden; die documenten zijn niet ondertekend. "
+            "**Uitvoermap openen** toont de ondertekende bestanden in uw "
+            "bestandsbeheerder. 'Voltooien' keert terug naar het "
+            "welkomstscherm."
         ),
         "de": (
             "Jedes Dokument des Stapels wird mit seinem Ergebnis aufgeführt. "
             "Erfolgreiche Zeilen zeigen das erreichte Signaturniveau und "
-            "gegebenenfalls den Status der Langzeitvalidierung. "
-            "Fehlgeschlagene Zeilen nennen den Grund; diese Dokumente wurden "
-            "nicht signiert. „Fertigstellen“ kehrt zum Startbildschirm "
-            "zurück."
+            "gegebenenfalls den Status der Langzeitvalidierung. Fehlgeschlagene "
+            "Zeilen nennen den Grund; diese Dokumente wurden nicht signiert. "
+            "**Ausgabeordner öffnen** zeigt die signierten Dateien in Ihrem "
+            "Dateimanager an. „Fertigstellen“ kehrt zum Startbildschirm zurück."
         ),
         "es": (
             "Cada documento del lote aparece con su resultado. Las líneas "
             "correctas muestran el nivel de firma alcanzado y, en su caso, el "
             "estado de la validación a largo plazo. Las líneas con error "
-            "explican el motivo; esos documentos no se firmaron. «Finalizar» "
-            "vuelve a la pantalla de bienvenida."
+            "explican el motivo; esos documentos no se firmaron. **Abrir "
+            "carpeta de salida** muestra los archivos firmados en su explorador "
+            "de archivos. «Finalizar» vuelve a la pantalla de bienvenida."
         ),
         "pt": (
             "Cada documento do lote é listado com o seu resultado. As linhas "
             "com êxito mostram o nível de assinatura alcançado e, quando "
             "aplicável, o estado da validação de longo prazo. As linhas "
-            "falhadas explicam o motivo; esses documentos não foram "
-            "assinados. «Concluir» regressa ao ecrã inicial."
+            "falhadas explicam o motivo; esses documentos não foram assinados. "
+            "**Abrir a pasta de saída** mostra os ficheiros assinados no seu "
+            "gestor de ficheiros. «Concluir» regressa ao ecrã inicial."
         ),
     },
     # ------------------------------------------------------------- step 1
@@ -1359,12 +1499,12 @@ CATALOG: dict[str, dict[str, str]] = {
         "pt": "O nível {level} precisa da cadeia da CA interna (âncoras de confiança).",
     },
     "docs.more": {
-        "en": "Full documentation (English)…",
-        "fr": "Documentation complète (en anglais)…",
-        "nl": "Volledige documentatie (Engels)…",
-        "de": "Vollständige Dokumentation (Englisch)…",
-        "es": "Documentación completa (en inglés)…",
-        "pt": "Documentação completa (em inglês)…",
+        "en": "Full documentation…",
+        "fr": "Documentation complète…",
+        "nl": "Volledige documentatie…",
+        "de": "Vollständige Dokumentation…",
+        "es": "Documentación completa…",
+        "pt": "Documentação completa…",
     },
     "docs.title": {
         "en": "Cachet — Documentation",
@@ -1495,6 +1635,67 @@ CATALOG: dict[str, dict[str, str]] = {
         "es": "Elija una imagen y luego haga clic en la vista previa para colocarla.",
         "pt": "Escolha uma imagem e depois clique na pré-visualização para a posicionar.",
     },
+    "place.anchor_status": {
+        "en": (
+            "{ok}/{total} document(s) accepted with this choice — details on "
+            "the Validation step."
+        ),
+        "fr": (
+            "{ok}/{total} document(s) accepté(s) avec ce choix — détails à "
+            "l'étape de validation."
+        ),
+        "nl": (
+            "{ok}/{total} document(en) aanvaard met deze keuze — details in de "
+            "validatiestap."
+        ),
+        "de": (
+            "{ok}/{total} Dokument(e) mit dieser Wahl akzeptiert — Details im "
+            "Prüfschritt."
+        ),
+        "es": (
+            "{ok}/{total} documento(s) aceptado(s) con esta elección — detalles "
+            "en el paso de validación."
+        ),
+        "pt": (
+            "{ok}/{total} documento(s) aceite(s) com esta escolha — detalhes no "
+            "passo de validação."
+        ),
+    },
+    "place.anchor_hint": {
+        "en": (
+            "Changing this re-checks every document: a file whose page count "
+            "differs from the template is accepted only if that page has "
+            "exactly the template's page size."
+        ),
+        "fr": (
+            "Modifier ce choix revérifie chaque document : un fichier dont le "
+            "nombre de pages diffère du modèle n'est accepté que si la page "
+            "choisie a exactement les mêmes dimensions que le modèle."
+        ),
+        "nl": (
+            "Als u dit wijzigt, wordt elk document opnieuw gecontroleerd: een "
+            "bestand met een ander aantal pagina's dan het sjabloon wordt "
+            "alleen aanvaard als die pagina exact de paginagrootte van het "
+            "sjabloon heeft."
+        ),
+        "de": (
+            "Bei einer Änderung wird jedes Dokument erneut geprüft: Eine Datei, "
+            "deren Seitenzahl von der Vorlage abweicht, wird nur akzeptiert, "
+            "wenn die gewählte Seite exakt die Seitengröße der Vorlage hat."
+        ),
+        "es": (
+            "Cambiar esta opción vuelve a comprobar todos los documentos: un "
+            "archivo cuyo número de páginas no coincide con el de la plantilla "
+            "solo se acepta si la página elegida (primera o última) tiene "
+            "exactamente el tamaño de página de la plantilla."
+        ),
+        "pt": (
+            "Alterar esta escolha volta a verificar todos os documentos: um "
+            "ficheiro cujo número de páginas difere do modelo só é aceite se a "
+            "página escolhida tiver exatamente as dimensões de página do "
+            "modelo."
+        ),
+    },
     # ------------------------------------------------------------- step 7
     "run.summary_docs": {
         "en": "Documents to sign: {count}",
@@ -1608,6 +1809,49 @@ CATALOG: dict[str, dict[str, str]] = {
         "es": "Azure: un solo inicio de sesión de Microsoft cubre todo el lote.",
         "pt": "Azure: um único início de sessão Microsoft cobre todo o lote.",
     },
+    "run.card_title": {
+        "en": "Insert your eID card",
+        "fr": "Insérez votre carte eID",
+        "nl": "Steek uw eID-kaart in de kaartlezer",
+        "de": "Stecken Sie Ihre eID-Karte ein",
+        "es": "Inserte su tarjeta eID",
+        "pt": "Insira o seu cartão eID",
+    },
+    "run.card_body": {
+        "en": (
+            "Insert your Belgian identity card in the reader now, before "
+            "pressing Start, and leave it in place for the whole batch. Your "
+            "PIN will be requested once per document."
+        ),
+        "fr": (
+            "Insérez dès maintenant votre carte d'identité belge dans le "
+            "lecteur, avant d'appuyer sur « Lancer la signature », et "
+            "laissez-la en place jusqu'à la fin du lot. Votre code PIN sera "
+            "demandé une fois par document."
+        ),
+        "nl": (
+            "Steek uw Belgische identiteitskaart nu in de kaartlezer, voordat u "
+            "op 'Ondertekenen starten' drukt, en laat de kaart tijdens de hele "
+            "reeks in de lezer zitten. Uw pincode wordt één keer per document "
+            "gevraagd."
+        ),
+        "de": (
+            "Stecken Sie Ihre belgische Identitätskarte jetzt in den "
+            "Kartenleser, bevor Sie auf „Signieren starten“ klicken, und lassen "
+            "Sie sie für den ganzen Stapel stecken. Ihre PIN wird einmal pro "
+            "Dokument abgefragt."
+        ),
+        "es": (
+            "Inserte ahora su tarjeta de identidad belga en el lector, antes de "
+            "pulsar «Iniciar la firma», y no la retire hasta que termine el "
+            "lote. El PIN se le pedirá una vez por documento."
+        ),
+        "pt": (
+            "Insira agora o seu cartão de identidade belga no leitor, antes de "
+            "premir «Iniciar a assinatura», e deixe-o inserido durante todo o "
+            "lote. O PIN ser-lhe-á pedido uma vez por documento."
+        ),
+    },
     "run.progress": {
         "en": "Processing {done}/{total}: {name}",
         "fr": "Traitement {done}/{total} : {name}",
@@ -1677,6 +1921,22 @@ CATALOG: dict[str, dict[str, str]] = {
         "es": "{ok} de {total} documento(s) correctos — {fail} con error.",
         "pt": "{ok} de {total} documento(s) com êxito — {fail} falharam.",
     },
+    "res.open_folder": {
+        "en": "Open output folder",
+        "fr": "Ouvrir le dossier de sortie",
+        "nl": "Uitvoermap openen",
+        "de": "Ausgabeordner öffnen",
+        "es": "Abrir carpeta de salida",
+        "pt": "Abrir a pasta de saída",
+    },
+    "res.open_folder_failed": {
+        "en": "Could not open the folder: {error}",
+        "fr": "Impossible d'ouvrir le dossier : {error}",
+        "nl": "Kan de map niet openen: {error}",
+        "de": "Der Ordner konnte nicht geöffnet werden: {error}",
+        "es": "No se pudo abrir la carpeta: {error}",
+        "pt": "Não foi possível abrir a pasta: {error}",
+    },
     "res.rrn_note": {
         "en": (
             "Reminder: every eID signature embeds your national register "
@@ -1706,3 +1966,7 @@ CATALOG: dict[str, dict[str, str]] = {
         ),
     },
 }
+
+# Long-form documentation (i18n_docs.py) shares the catalog, tr() and the
+# test invariants.
+CATALOG.update(DOCS_CATALOG)
