@@ -570,27 +570,49 @@ class GuiAzurePanel(unittest.TestCase):
         except Exception as exc:  # noqa: BLE001
             self.skipTest(f"tkinter/GUI unavailable: {exc}")
 
+    def _wizard_to_mode_step(self, app):
+        """Complete steps 1-4 with minimal state and enter the mode step."""
+        import tempfile
+
+        from test_sign_pdfs_beid import make_pdf
+
+        tmp = Path(tempfile.mkdtemp())
+        tpl = make_pdf(tmp / "t.pdf", [(595, 842)])
+        app._start_wizard()
+        app.template_path = tpl
+        app.template_error = None
+        app.template_dims = core.page_dimensions(tpl)
+        app.input_paths = [tpl]
+        app.output_dir = tmp
+        app._goto_step(2)               # validation auto-runs on entry
+        app._goto_step(4)               # signature-type step
+        app.update()
+
     def test_azure_panel_toggles_with_mode(self):
         import gui
 
         app = gui.CachetApp(SimpleNamespace(lib=None))
         try:
             app.update()
+            self._wizard_to_mode_step(app)
             app.mode_var.set("azure")
-            app._refresh_placement_section()
+            app._refresh_azure_visibility()
             app.update()
             self.assertTrue(app.azure_section.winfo_manager())  # shown
-            self.assertFalse(app.image_row.winfo_manager())     # no image picker
             self.assertEqual(app.azure_auth_var.get(), "interactive")
             app.mode_var.set("image")
-            app._refresh_placement_section()
+            app._refresh_azure_visibility()
             app.update()
             self.assertFalse(app.azure_section.winfo_manager())  # hidden again
+            # the image picker lives on the placement step, image mode only
+            app._goto_step(5)
+            app.update()
             self.assertTrue(app.image_row.winfo_manager())
         finally:
             app.destroy()
 
     def test_vault_url_prefilled_and_docs_popup(self):
+        import customtkinter as ctk
         import gui
 
         with mock.patch.dict("os.environ", {}, clear=False):
@@ -599,12 +621,15 @@ class GuiAzurePanel(unittest.TestCase):
             app = gui.CachetApp(SimpleNamespace(lib=None))
         try:
             app.update()
-            self.assertEqual(app.azure_vault_var.get(), "https://login.live.com")
-            self.assertIn("THE THREE MODES", app.doc_box.get("1.0", "end"))
+            self.assertEqual(app.azure_vault, "https://login.live.com")
             app._show_docs_popup()
             app.update()
             self.assertTrue(app._docs_win.winfo_exists())
             self.assertEqual(app._docs_win.title(), "Cachet — Documentation")
+            box = next(w for w in app._docs_win.winfo_children()
+                       if isinstance(w, ctk.CTkTextbox))
+            self.assertIn("THE THREE MODES", box.get("1.0", "end"))
+            self.assertIn("GLOSSARY", box.get("1.0", "end"))
             first = app._docs_win
             app._show_docs_popup()  # second click reuses the window
             self.assertIs(app._docs_win, first)

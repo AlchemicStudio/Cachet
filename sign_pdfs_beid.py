@@ -28,7 +28,7 @@ from __future__ import annotations
 # merging develop -> main triggers the release workflow, which tags
 # v{__version__} and publishes the binaries (see .github/workflows/release.yml
 # and BUILD.md "Release process").
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 
 import argparse
 import dataclasses
@@ -303,14 +303,10 @@ def _page_mediabox(writer, page_index: int) -> list[float]:
     return [0.0, 0.0, 595.276, 841.89]  # A4 default
 
 
-def _last_page_mediabox(writer) -> list[float]:
-    """MediaBox of the last page (with inheritance from the page tree)."""
-    return _page_mediabox(writer, -1)
-
-
-def _last_page_box(writer) -> tuple[float, float, float, float]:
-    """Vignette rectangle, anchored bottom-right of the last page."""
-    mb = _last_page_mediabox(writer)
+def _default_vignette_box(writer, page_index: int = -1) -> tuple[float, float, float, float]:
+    """Vignette rectangle, anchored bottom-right of page ``page_index``
+    (0-based, -1 = last page — the historical default)."""
+    mb = _page_mediabox(writer, page_index)
     x1 = mb[2] - _STAMP_MARGIN
     x0 = max(mb[0] + 4, x1 - _STAMP_W)
     y0 = mb[1] + _STAMP_MARGIN
@@ -501,10 +497,11 @@ def sign_one(
     >= b-t and ``validation_context`` for b-lt/b-lta (both are built once per
     batch by ``build_signing_material``).
 
-    By default (``pos`` None) the vignette is anchored bottom-right of the LAST
-    page (historical behavior). If ``pos`` is provided, it is placed on page
-    ``page_index`` (0-based), lower-left corner at ``pos`` points, in a 3:1 box
-    one-fifth as wide as the page (cf. ``vignette_size_pt``).
+    By default (``pos`` None) the vignette is anchored bottom-right of page
+    ``page_index`` — the LAST page when that is None too (historical behavior).
+    If ``pos`` is provided, it is placed on page ``page_index`` (0-based),
+    lower-left corner at ``pos`` points, in a 3:1 box one-fifth as wide as the
+    page (cf. ``vignette_size_pt``).
     """
     meta = PdfSignatureMetadata(
         field_name=field_name,
@@ -523,7 +520,8 @@ def sign_one(
         # ("hybrid cross-reference sections while hybrid xrefs are disabled").
         writer = IncrementalPdfFileWriter(inf, strict=False)
         if pos is None:
-            on_page, box = -1, _last_page_box(writer)
+            on_page = page_index if page_index is not None else -1
+            box = _default_vignette_box(writer, on_page)
             style = build_stamp_style(identity)
         else:
             on_page = page_index if page_index is not None else -1
@@ -547,6 +545,19 @@ def sign_one(
 # =========================================================================
 #  Validation against a template
 # =========================================================================
+
+# Page anchors: with --page first|last (or the GUI's step-4 selector) the
+# signature page is resolved PER DOCUMENT (index 0 / -1). This is what lets a
+# batch contain documents whose page count differs from the template: the
+# anchor page must still match the template's anchor page exactly, so the
+# chosen (x, y) is guaranteed to fit the page that carries the signature.
+PAGE_ANCHORS = ("first", "last")
+
+
+def anchor_page_index(page_anchor: str) -> int:
+    """0-based page index of a page anchor: "first" -> 0, "last" -> -1."""
+    return 0 if page_anchor == "first" else -1
+
 
 def _iter_pages(node, inherited_mb=None):
     """Walk the page tree in order and yield (page, mediabox), propagating the
@@ -584,18 +595,40 @@ class ValidationResult:
 
 
 def validate_against_template(
-    template_dims: list[tuple[float, float]], pdf_path
+    template_dims: list[tuple[float, float]],
+    pdf_path,
+    *,
+    page_anchor: str | None = None,
 ) -> ValidationResult:
     """Check that a PDF has the SAME page count AND per-page dimensions
-    EXACTLY identical to the template (no tolerance)."""
+    EXACTLY identical to the template (no tolerance).
+
+    With ``page_anchor`` ("first"/"last"), a file whose page count DIFFERS
+    from the template is accepted iff its anchor page has exactly the
+    template's anchor-page dimensions — that is the page the signature lands
+    on, so the chosen position is guaranteed to fit it. Files with the
+    template's page count keep the full strict check.
+    """
     path = Path(pdf_path)
     try:
         dims = page_dimensions(path)
     except Exception as exc:  # noqa: BLE001
         return ValidationResult(path, False, f"unreadable ({exc})")
     if len(dims) != len(template_dims):
+        count_msg = f"{len(dims)} page(s), the template has {len(template_dims)}"
+        if page_anchor is None or not dims or not template_dims:
+            return ValidationResult(path, False, count_msg)
+        idx = anchor_page_index(page_anchor)
+        d, t = dims[idx], template_dims[idx]
+        if d != t:
+            return ValidationResult(
+                path,
+                False,
+                f"{count_msg}; {page_anchor} page {d[0]:.2f}×{d[1]:.2f} pt "
+                f"≠ template {t[0]:.2f}×{t[1]:.2f} pt",
+            )
         return ValidationResult(
-            path, False, f"{len(dims)} page(s), the template has {len(template_dims)}"
+            path, True, f"{count_msg} — signed on the {page_anchor} page"
         )
     for i, (d, t) in enumerate(zip(dims, template_dims), start=1):
         if d != t:
@@ -607,10 +640,15 @@ def validate_against_template(
     return ValidationResult(path, True, "")
 
 
-def validate_files(template_path, pdf_paths) -> list[ValidationResult]:
+def validate_files(
+    template_path, pdf_paths, *, page_anchor: str | None = None
+) -> list[ValidationResult]:
     """Validate a list of PDFs against the template (read once)."""
     template_dims = page_dimensions(template_path)
-    return [validate_against_template(template_dims, p) for p in pdf_paths]
+    return [
+        validate_against_template(template_dims, p, page_anchor=page_anchor)
+        for p in pdf_paths
+    ]
 
 
 # =========================================================================
@@ -758,6 +796,27 @@ def _render_with_pdftoppm(pdf_path, page_index: int, px_width: int):
         return img
 
 
+def open_in_file_manager(path, *, system: str | None = None,
+                         popen=subprocess.Popen, startfile=None) -> None:
+    """Show ``path`` (the output folder) in the desktop's file manager:
+    Explorer on Windows (``os.startfile``), Finder on macOS (``open``),
+    ``xdg-open`` elsewhere. A missing folder raises ``FileNotFoundError``
+    before anything is launched (the Unix launchers exit asynchronously, so
+    their own failures are not observable), and a missing launcher / an
+    ``os.startfile`` refusal propagate — the caller reports them.
+    ``system``/``popen``/``startfile`` are injectable for tests (no desktop
+    is touched there)."""
+    system = system or platform.system()
+    target = str(path)
+    if not Path(target).is_dir():
+        raise FileNotFoundError(f"Folder not found: {target}")
+    if system == "Windows":
+        (startfile or os.startfile)(target)  # noqa: S606 - opens a folder, no shell
+        return
+    cmd = ["open", target] if system == "Darwin" else ["xdg-open", target]
+    popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def unique_output_path(out_dir, stem: str, suffix: str = "_signe") -> Path:
     """Free output path: ``{stem}{suffix}.pdf`` then, on collision,
     ``{stem}{suffix} - 1.pdf``, ``- 2``, … until a non-existent name. NEVER
@@ -794,6 +853,11 @@ class RunConfig:
     page: int | None = None
     x: float | None = None
     y: float | None = None
+    # "first"/"last": resolve the signature page PER DOCUMENT (index 0 / -1)
+    # instead of a fixed 1-based page, and relax template validation to accept
+    # page-count mismatches (the anchor page must still match the template's).
+    # Mutually exclusive with `page`.
+    page_anchor: str | None = None
     timestamp_url: str | None = None   # None -> CACHET_TSA_URL env -> DigiCert
     trust_list_url: str | None = None  # None -> CACHET_LOTL_URL env -> EU LOTL
     digest: str = "sha256"             # sha256 | sha384 | sha512
@@ -829,6 +893,15 @@ def validate_config(cfg: RunConfig) -> None:
         raise ValueError("Missing output folder (--output).")
     if cfg.mode not in ("beid", "image", "azure"):
         raise ValueError(f"Unknown mode: {cfg.mode!r} (expected beid|image|azure).")
+    if cfg.page_anchor is not None and cfg.page_anchor not in PAGE_ANCHORS:
+        raise ValueError(
+            f"Unknown page anchor: {cfg.page_anchor!r} "
+            f"(expected {'|'.join(PAGE_ANCHORS)})."
+        )
+    if cfg.page_anchor and cfg.page is not None:
+        raise ValueError(
+            "Give either a page number or first/last as the target page, not both."
+        )
     if cfg.mode in ("beid", "azure"):
         if cfg.pades_level not in PADES_LEVELS:
             raise ValueError(
@@ -1089,9 +1162,16 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
     Path(cfg.output).mkdir(parents=True, exist_ok=True)
 
     # Optional position (None = unspecified). beid mode: if provided, vignette
-    # placed freely; otherwise default vignette (bottom-right, last page).
+    # placed freely; otherwise default vignette (bottom-right corner).
+    # A page anchor resolves the page PER DOCUMENT (first -> 0, last -> -1),
+    # which is what makes page-count mismatches against the template workable.
     placement = cfg.x is not None and cfg.y is not None
-    page = cfg.page or 1
+    if cfg.page_anchor:
+        page_index = anchor_page_index(cfg.page_anchor)
+        page_label = f"{cfg.page_anchor} page"
+    else:
+        page_index = (cfg.page or 1) - 1
+        page_label = f"page {cfg.page or 1}"
     x = cfg.x if cfg.x is not None else 0.0
     y = cfg.y if cfg.y is not None else 0.0
 
@@ -1102,7 +1182,9 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
     for src in cfg.inputs:
         src = Path(src)
         if template_dims is not None:
-            verdict = validate_against_template(template_dims, src)
+            verdict = validate_against_template(
+                template_dims, src, page_anchor=cfg.page_anchor
+            )
             if not verdict.ok:
                 res = DocResult(src, None, False, f"rejected — {verdict.reason}")
                 results.append(res)
@@ -1120,14 +1202,21 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
                 )
                 if placement:
                     sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades_level,
-                             identity, page_index=page - 1, pos=(x, y),
+                             identity, page_index=page_index, pos=(x, y),
                              **sign_kwargs)
-                    prefix = (f"signed ({mode_tag}) — vignette page {page} "
+                    prefix = (f"signed ({mode_tag}) — vignette {page_label} "
                               f"@ ({x:.0f}, {y:.0f})")
                 else:
+                    # No position: default bottom-right vignette. An anchor
+                    # moves it to the first/last page; None keeps the
+                    # historical last-page default.
                     sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades_level,
-                             identity, **sign_kwargs)
+                             identity,
+                             page_index=page_index if cfg.page_anchor else None,
+                             **sign_kwargs)
                     prefix = f"signed ({mode_tag}) — vignette"
+                    if cfg.page_anchor:
+                        prefix += f" ({page_label}, bottom-right)"
                 # R8: re-open + validate, report the *achieved* level. A
                 # mismatch raises SelfVerificationError -> document failed.
                 if (cfg.verify and not cfg.legacy_cms
@@ -1140,8 +1229,8 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
                 else:
                     detail = f"{prefix} — {label}"
             else:
-                insert_image_one(src, dst, cfg.image_path, page - 1, x, y)
-                detail = f"image inserted — page {page} @ ({x:.0f}, {y:.0f})"
+                insert_image_one(src, dst, cfg.image_path, page_index, x, y)
+                detail = f"image inserted — {page_label} @ ({x:.0f}, {y:.0f})"
             res = DocResult(src, dst, True, detail)
         except SelfVerificationError as exc:
             res = DocResult(
@@ -1178,6 +1267,28 @@ def print_summary(results: list[DocResult], out_dir, *, rrn_note: bool = False) 
         # R9: repeat the privacy implication in the final summary.
         print("Note: eID signatures embed the signer's national register "
               "number (RRN); mind how the signed PDFs are distributed.")
+
+
+def page_arg(value: str):
+    """argparse type for --page: a 1-based page number, or "first"/"last"."""
+    v = value.strip().lower()
+    if v in PAGE_ANCHORS:
+        return v
+    try:
+        return int(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected a page number, 'first' or 'last' (got {value!r})"
+        ) from None
+
+
+def describe_placement(cfg: RunConfig) -> str:
+    """Human summary of where the vignette will go (CLI banner)."""
+    page_phrase = (f"{cfg.page_anchor} page" if cfg.page_anchor
+                   else f"page {cfg.page or 1}")
+    if cfg.x is not None and cfg.y is not None:
+        return f"vignette {page_phrase} @ ({cfg.x:.0f}, {cfg.y:.0f})"
+    return f"vignette bottom-right, {cfg.page_anchor or 'last'} page"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -1217,8 +1328,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Image to insert (required in --mode image).",
     )
     parser.add_argument(
-        "--page", type=int, default=None,
-        help="Target page (1-based). Image: insertion page. beid: vignette page.",
+        "--page", type=page_arg, default=None, metavar="N|first|last",
+        help="Target page: a 1-based number, or 'first'/'last' (resolved per "
+             "document). Image: insertion page. beid: vignette page. With "
+             "--template, first/last also accepts files whose page count "
+             "differs from the template (their first/last page must still "
+             "match the template's).",
     )
     parser.add_argument(
         "--x", type=float, default=None,
@@ -1364,6 +1479,13 @@ def resolve_config(args) -> RunConfig:
     else:
         pades_level = explicit_level or "b-lta"
 
+    # --page accepts a 1-based number OR "first"/"last" (page_arg); a string
+    # becomes the per-document page anchor, a number the fixed page.
+    page = getattr(args, "page", None)
+    page_anchor = None
+    if isinstance(page, str):
+        page_anchor, page = page, None
+
     cfg = RunConfig(
         inputs=collect_pdfs([str(p) for p in raw_inputs]),
         output=Path(output) if output else None,
@@ -1373,7 +1495,8 @@ def resolve_config(args) -> RunConfig:
         field=args.field,
         lib=args.lib,
         image_path=Path(args.image_path) if args.image_path else None,
-        page=args.page,
+        page=page,
+        page_anchor=page_anchor,
         x=args.x,
         y=args.y,
         timestamp_url=getattr(args, "timestamp_url", None),
@@ -1435,10 +1558,7 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        placed = cfg.x is not None and cfg.y is not None
-        where = (f"vignette page {cfg.page or 1} @ ({cfg.x:.0f}, {cfg.y:.0f})"
-                 if placed else "vignette bottom-right, last page")
-        print(f"Mode: eID — {where}. PKCS#11 lib: {lib_path}")
+        print(f"Mode: eID — {describe_placement(cfg)}. PKCS#11 lib: {lib_path}")
         # R9: the RRN is in the signing certificate, hence in every signature.
         print(
             "WARNING: each eID signature embeds the signer's national "
@@ -1455,10 +1575,8 @@ def main() -> int:
             print(f"LTV trust anchors: EU trusted list ({resolve_lotl_url(cfg.trust_list_url)})")
         print(f"{len(cfg.inputs)} PDF(s). The PIN will be requested for each document.")
     elif cfg.mode == "azure":
-        placed = cfg.x is not None and cfg.y is not None
-        where = (f"vignette page {cfg.page or 1} @ ({cfg.x:.0f}, {cfg.y:.0f})"
-                 if placed else "vignette bottom-right, last page")
-        print(f"Mode: Azure Key Vault — {where}. Vault: {cfg.azure_vault_url}")
+        print(f"Mode: Azure Key Vault — {describe_placement(cfg)}. "
+              f"Vault: {cfg.azure_vault_url}")
         # R11: AES, not QES — and the signature carries the user's identity.
         print(
             "Note: signs with YOUR personal Key Vault certificate — an "
@@ -1474,13 +1592,18 @@ def main() -> int:
         print(f"{len(cfg.inputs)} PDF(s). One Microsoft sign-in for the whole "
               f"batch ({resolve_azure_auth(cfg.azure_auth)}).")
     else:
+        page_phrase = (f"{cfg.page_anchor} page" if cfg.page_anchor
+                       else f"page {cfg.page or 1}")
         print(
             f"Mode: image — {cfg.image_path} "
-            f"(page {cfg.page or 1}, x={cfg.x or 0:.0f}, y={cfg.y or 0:.0f})."
+            f"({page_phrase}, x={cfg.x or 0:.0f}, y={cfg.y or 0:.0f})."
         )
         print(f"{len(cfg.inputs)} PDF(s).")
     if cfg.template:
         print(f"Validation against the template: {cfg.template}")
+        if cfg.page_anchor:
+            print(f"  Files whose page count differs from the template are "
+                  f"accepted and signed on their {cfg.page_anchor} page.")
     print()
 
     def progress(r: DocResult) -> None:

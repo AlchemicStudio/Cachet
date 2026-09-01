@@ -22,6 +22,12 @@ before signing, outputs never overwrite existing files, and the whole thing
 ships as two standalone PyInstaller binaries (windowed GUI + headless CLI) for
 Linux and Windows.
 
+The GUI is a **step-by-step wizard** (template → documents → validation →
+output folder → signature type → placement → signing → report) with contextual
+help on every step, available in **English, French, Dutch, German, Spanish and
+Portuguese** (language selector on the welcome screen and at the top of every
+wizard step; the system language is picked by default).
+
 > ⚖️ The eID mode uses the card's **non-repudiation** certificate, legally
 > equivalent to a handwritten signature. The **national register number** is
 > embedded in every signature produced — mind the distribution of the signed
@@ -39,7 +45,9 @@ Linux and Windows.
 
 In all modes, the same vignette/image + page + position is applied to **all**
 the documents in the batch — template validation guarantees the files are
-geometrically identical.
+geometrically identical. With `--page first|last` the target page is resolved
+**per document** instead, which also lets the batch contain files whose page
+count differs from the template (see *Template validation*).
 
 ### eID vs Azure — which one?
 
@@ -60,6 +68,14 @@ If a template PDF is supplied, each input is accepted **only** if it has the
 **same page count** AND **exactly identical per-page dimensions** (strict
 equality, no tolerance). Rejected files are never signed; the rejection reason
 is displayed (CLI summary / GUI table).
+
+**Files with a different page count** (e.g. scanned annexes were appended) can
+still be processed by targeting a per-document page: pass `--page first` or
+`--page last` (in the GUI, a selector appears after validation whenever such
+files are detected). Every file is then signed on its own first/last page at
+the chosen position; that page must still have **exactly** the template's
+corresponding page dimensions, so the position is guaranteed to fit. Files with
+the template's page count keep the full strict check.
 
 ## Output
 
@@ -130,7 +146,7 @@ python3 -m venv venv
 | `--template <pdf>` | template PDF; if supplied, inputs are validated against it. |
 | `--mode beid\|image` | signature mode (default `beid`). |
 | `--image-path <img>` | image to stamp (**required** in `--mode image`). |
-| `--page <N>` | target page, **1-based**. Image: insertion page. beID: vignette page. |
+| `--page <N\|first\|last>` | target page: a **1-based** number, or `first`/`last` (resolved **per document**; with `--template` this also accepts files whose page count differs — their first/last page must still match the template's). Image: insertion page. beID: vignette page. |
 | `--x <pt> --y <pt>` | lower-left corner, in points from the page's bottom-left. beID: **omit both ⇒ bottom-right of the last page**. |
 | `--pades-level <lvl>` | PAdES baseline level: `b-b`, `b-t`, `b-lt`, `b-lta` (**default `b-lta`**). See *Signature levels* below. |
 | `--timestamp-url <url>` | RFC 3161 TSA for levels ≥ b-t. Precedence: flag > `CACHET_TSA_URL` env > `http://timestamp.digicert.com`. |
@@ -212,12 +228,30 @@ python3 -m venv venv
 
 ## Usage — graphical interface
 
-A vertical wizard walks through the flow: **1.** template → **2.** files →
-**3.** output folder → **4.** validation (pass/fail table) → **5.** mode
-(eID/image/**Azure** + PAdES level selector, default `b-lta`; in Azure mode a
-panel offers the vault settings and a **"Sign in with Microsoft"** action) →
-**6.** page + position (actual page preview, click to
-place) → **7.** launch → **8.** per-document summary.
+The app opens on a **welcome screen** (overview + language selector —
+English, French, Dutch, German, Spanish, Portuguese); **Start** launches a
+wizard with the **language selector in its top bar** (switching re-renders
+the current step in place, nothing entered is lost), a stepper (completed
+steps green, problems red, unreached steps disabled), the current step's form
+on the left, contextual help on the right, and Previous/Next buttons that
+name the target step. **Cancel** asks for confirmation, then resets everything
+back to the welcome screen.
+
+The 8 steps: **1.** template (with a single PDF to sign, pick that document
+itself as the template) → **2.** documents → **3.** validation (pass/fail
+table; if some files have a **different page count** than the template, a
+selector appears to sign every file on its own **first or last page**) →
+**4.** output folder → **5.** signature type (eID/image/**Azure** + PAdES
+level selector, default `b-lta`; in Azure mode a panel offers the vault
+settings and a **"Sign in with Microsoft"** action; **"Full documentation"**
+opens the localized reference — modes, PAdES levels, AES vs QES, glossary —
+ending with clickable links to the source standards) → **6.** placement
+(actual page preview, click to place — in eID/Azure modes the vignette is
+signed exactly there —, plus a manual **target page** field; when page counts
+differ, the first/last selector is also shown at the top of this step and the
+preview is locked onto that page) → **7.** signing (summary, a green
+**"insert your eID card"** reminder in eID mode, progress) → **8.**
+per-document report with an **"Open output folder"** button.
 
 ---
 
@@ -254,9 +288,11 @@ Headless `unittest` suite (no card, no tkinter):
 | `sign_pdfs_beid.py` | core + CLI entry point (business logic, importable without tkinter). |
 | `trust.py` | EU trusted-list (LOTL) trust provider: anchors for LTV in beid mode, with local cache. |
 | `azure_signer.py` | azure mode: Entra ID login, per-user Key Vault key/cert resolution, pyHanko signer (digest-only signing). |
-| `gui.py` | CustomTkinter interface (façade over the core). |
+| `gui.py` | CustomTkinter interface: landing page + 8-step wizard (façade over the core). |
+| `i18n.py` | GUI localization catalog (EN/FR/NL/DE/ES/PT), light `**bold**` markup helper, documentation sections/sources. |
+| `i18n_docs.py` | long-form documentation of the "Full documentation" popup, six languages (merged into the catalog). |
 | `gui_main.py` | entry point of the windowed binary (opens the GUI). |
-| `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py` | `unittest` test suites. |
+| `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py`, `test_i18n.py` | `unittest` test suites. |
 | `cachet.spec` | PyInstaller recipe (two binaries). |
 | `build_*.sh` / `build_windows.bat` | build scripts. |
 | `.github/workflows/build.yml` | CI: Windows + Linux binaries as artifacts. |
