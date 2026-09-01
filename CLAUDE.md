@@ -219,10 +219,16 @@ reused by the GUI canvas.
 
 ## GUI workflow (`gui.py`)
 
-`CachetApp` (a `ctk.CTk`) opens on a **landing page** (overview text, language
-selector, Start bottom-right — no stepper there); Start builds the **wizard**:
-a **top bar with the same language selector** (`_wizard_lang_menu`), a
-stepper bar, a split body (form on the left inside a `CTkScrollableFrame`,
+`CachetApp` (a `ctk.CTk`) opens on a **landing page** (overview text, top
+bar, Start bottom-right — no stepper there); Start builds the **wizard**. Both
+screens share the same **top bar** (`_build_top_bar`): the brand on the left
+(`logo.png` + "Cachet" — `_load_logo` caches a `CTkImage`, `_asset_path`
+resolves the file next to `gui.py` or under `sys._MEIPASS` in the frozen
+binary via `gui_datas` in cachet.spec; a missing logo degrades to the name
+alone), and on the right the language selector (`_wizard_lang_menu` in the
+wizard) with the **support link** to its right (`support.button` →
+`_SUPPORT_URL`, the Stripe payment page, opened in the browser). The wizard
+adds a stepper bar, a split body (form on the left inside a `CTkScrollableFrame`,
 per-step contextual help `i18n` text on the right, rendered with
 `_fill_textbox` so `**bold**` markup shows as bold), and a footer whose
 Previous/Next labels **name the target step** (`nav.next`/`nav.previous`).

@@ -1419,6 +1419,54 @@ class GuiWizardExtras(_GuiTestBase):
         app.destroy()
 
 
+class GuiTopBar(_GuiTestBase):
+    """Top bar shared by landing + wizard: brand (logo + name) on the left,
+    support link (Stripe payment page) right of the language selector."""
+
+    def test_brand_and_support_link_on_both_screens(self):
+        import gui
+        from i18n import tr
+        app = self.make_app()                      # landing page
+        opened = []
+        orig = gui.webbrowser.open
+        gui.webbrowser.open = lambda u, *a, **k: opened.append(u)
+        try:
+            self.assertEqual(app._brand_name_lbl.cget("text"), "Cachet")
+            self.assertIsNotNone(app._brand_logo_lbl)   # logo.png in checkout
+            self.assertEqual(app._support_btn.cget("text"), tr("support.button"))
+            app._support_btn.invoke()
+            self.assertEqual(
+                opened, ["https://buy.stripe.com/fZu28lbKv0gQfmvgP96oo01"])
+            app._start_wizard()                    # wizard top bar too
+            app.update()
+            self.assertEqual(app._brand_name_lbl.cget("text"), "Cachet")
+            app._support_btn.invoke()
+            self.assertEqual(len(opened), 2)
+        finally:
+            gui.webbrowser.open = orig
+        app.destroy()
+
+    def test_logo_loads_and_degrades_gracefully(self):
+        import gui
+        logo = gui._load_logo()
+        self.assertIsNotNone(logo)
+        self.assertEqual(logo.cget("size")[1], gui._LOGO_SIZE)
+        self.assertIsNot(gui._load_logo(), logo)   # fresh per call (root-bound)
+        # missing file -> no logo, no crash (the brand shows the name alone)
+        orig_cache, gui._logo_pil = gui._logo_pil, None
+        orig_path = gui._asset_path
+        gui._asset_path = lambda name: self.tmp / "missing" / name
+        try:
+            self.assertIsNone(gui._load_logo())
+            app = self.make_app()
+            self.assertIsNone(app._brand_logo_lbl)
+            self.assertEqual(app._brand_name_lbl.cget("text"), "Cachet")
+            app.destroy()
+        finally:
+            gui._asset_path = orig_path
+            gui._logo_pil = orig_cache
+
+
 class HeadlessImport(unittest.TestCase):
     def test_core_imports_without_tkinter(self):
         code = "import sign_pdfs_beid, sys; print('tkinter' in sys.modules)"

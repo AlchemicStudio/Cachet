@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import threading
 import webbrowser
 from pathlib import Path
@@ -55,6 +56,9 @@ _FRAME_MAX_H = 460
 
 _HELP_PANEL_W = 380  # right column (contextual help) width, px
 _HINT_WRAP = 520     # px; CTk labels do not auto-wrap
+
+_LOGO_SIZE = 30      # top-bar logo height, px (width follows the aspect)
+_SUPPORT_URL = "https://buy.stripe.com/fZu28lbKv0gQfmvgP96oo01"
 
 # Wizard steps, in order. Each key maps to the i18n entries
 # step.<key>.short / step.<key>.title / step.<key>.help and to a
@@ -74,6 +78,46 @@ _COL_LOCKED = ("gray80", "gray25")       # not reachable yet
 _COL_CARD_BG = ("#e3f3e6", "#1e3a26")    # step-7 "insert your eID card" box
 _COL_CARD_FG = ("#1d4d2a", "#bfe3c6")
 _COL_LINK = ("#1a5fb4", "#78aeed")       # documentation links (light, dark)
+
+
+def _asset_path(name: str) -> Path:
+    """Path of a bundled asset (e.g. the logo): next to this file in a
+    checkout, under the PyInstaller extraction dir (``sys._MEIPASS``) in the
+    frozen binary — cachet.spec ships it in ``gui_datas``."""
+    return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / name
+
+
+_logo_pil = None     # cached PIL image; False = tried and failed
+
+
+def _load_logo_pil():
+    """PIL image of ``logo.png``, downscaled once and cached (the source is
+    2048² — 4× the display size is plenty of HiDPI headroom). None if the
+    file is missing or unreadable — the brand then degrades to the name
+    alone, the app never fails over a decorative asset."""
+    global _logo_pil
+    if _logo_pil is None:
+        try:
+            im = Image.open(_asset_path("logo.png"))
+            im.thumbnail((_LOGO_SIZE * 4, _LOGO_SIZE * 4))
+            _logo_pil = im
+        except Exception:  # noqa: BLE001 - decorative only
+            _logo_pil = False
+    return _logo_pil or None
+
+
+def _load_logo():
+    """Fresh ``CTkImage`` of the logo, or None. Created per call — NEVER
+    cache the CTkImage itself: it binds to the Tk root that first renders it
+    (its PhotoImages are minted lazily against that root), so a cached one
+    would crash any later root (tests create several). Only the PIL source
+    is cached."""
+    pil = _load_logo_pil()
+    if pil is None:
+        return None
+    w, h = pil.size
+    return ctk.CTkImage(light_image=pil, dark_image=pil,
+                        size=(round(_LOGO_SIZE * w / h), _LOGO_SIZE))
 
 
 def _alive(widget) -> bool:
@@ -214,6 +258,43 @@ class CachetApp(ctk.CTk):
         self._invalidate_run()
         self._refresh_chrome()
 
+    # ============================================================= CHROME
+    def _build_top_bar(self, parent, *, lang_command):
+        """Top bar shared by the landing page and the wizard: the brand
+        (logo + app name) on the left; on the right, the language selector
+        with the support link to its right. Returns the language option menu
+        (the caller keeps the handle it re-renders/locks with)."""
+        top = ctk.CTkFrame(parent, fg_color="transparent")
+        top.pack(fill="x")
+        brand = ctk.CTkFrame(top, fg_color="transparent")
+        brand.pack(side="left", padx=(2, 8), pady=(0, 6))
+        logo = _load_logo()
+        self._brand_logo_lbl = None
+        if logo is not None:
+            self._brand_logo_lbl = ctk.CTkLabel(brand, image=logo, text="")
+            self._brand_logo_lbl.pack(side="left")
+        self._brand_name_lbl = ctk.CTkLabel(
+            brand, text="Cachet", font=ctk.CTkFont(size=18, weight="bold"))
+        self._brand_name_lbl.pack(side="left", padx=(8, 0))
+        # side="right" packs outermost first: the support link stays to the
+        # RIGHT of the language selector.
+        self._support_btn = ctk.CTkButton(
+            top, text=tr("support.button"), width=170,
+            fg_color="transparent", border_width=1,
+            text_color=("gray20", "gray80"),
+            command=lambda: webbrowser.open(_SUPPORT_URL))
+        self._support_btn.pack(side="right", padx=(8, 2), pady=(0, 6))
+        menu = ctk.CTkOptionMenu(
+            top, width=150,
+            values=[i18n.LANGUAGE_NAMES[c] for c in i18n.LANGUAGES],
+            command=lang_command,
+        )
+        menu.set(i18n.LANGUAGE_NAMES[i18n.get_language()])
+        menu.pack(side="right", padx=8, pady=(0, 6))
+        ctk.CTkLabel(top, text=tr("landing.language_label")
+                     ).pack(side="right", padx=(0, 2), pady=(0, 6))
+        return menu
+
     # ============================================================ LANDING
     def _clear_screen(self) -> None:
         for w in self._screen.winfo_children():
@@ -226,17 +307,9 @@ class CachetApp(ctk.CTk):
         page = ctk.CTkFrame(self._screen, fg_color="transparent")
         page.pack(fill="both", expand=True, padx=28, pady=20)
 
-        # Top bar: language selector on the right (no stepper on this page).
-        top = ctk.CTkFrame(page, fg_color="transparent")
-        top.pack(fill="x")
-        self._lang_menu = ctk.CTkOptionMenu(
-            top, width=150,
-            values=[i18n.LANGUAGE_NAMES[c] for c in i18n.LANGUAGES],
-            command=self._on_language_change,
-        )
-        self._lang_menu.set(i18n.LANGUAGE_NAMES[i18n.get_language()])
-        self._lang_menu.pack(side="right", padx=8)
-        ctk.CTkLabel(top, text=tr("landing.language_label")).pack(side="right", padx=(0, 2))
+        # Top bar: brand left, language selector + support link right
+        # (no stepper on this page).
+        self._lang_menu = self._build_top_bar(page, lang_command=self._on_language_change)
 
         # Center: overview of what the app does.
         body = ctk.CTkFrame(page, fg_color="transparent")
@@ -298,18 +371,9 @@ class CachetApp(ctk.CTk):
         outer = ctk.CTkFrame(self._screen, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=12, pady=(10, 8))
 
-        # --- top bar: language selector, reachable from every step -------
-        top = ctk.CTkFrame(outer, fg_color="transparent")
-        top.pack(fill="x")
-        self._wizard_lang_menu = ctk.CTkOptionMenu(
-            top, width=150,
-            values=[i18n.LANGUAGE_NAMES[c] for c in i18n.LANGUAGES],
-            command=self._on_wizard_language_change,
-        )
-        self._wizard_lang_menu.set(i18n.LANGUAGE_NAMES[i18n.get_language()])
-        self._wizard_lang_menu.pack(side="right", padx=8, pady=(0, 6))
-        ctk.CTkLabel(top, text=tr("landing.language_label")
-                     ).pack(side="right", padx=(0, 2), pady=(0, 6))
+        # --- top bar: brand + language selector + support, every step ----
+        self._wizard_lang_menu = self._build_top_bar(
+            outer, lang_command=self._on_wizard_language_change)
 
         # --- stepper bar -------------------------------------------------
         stepper = ctk.CTkFrame(outer)

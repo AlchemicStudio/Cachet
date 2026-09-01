@@ -230,8 +230,11 @@ python3 -m venv venv
 
 The app opens on a **welcome screen** (overview + language selector —
 English, French, Dutch, German, Spanish, Portuguese); **Start** launches a
-wizard with the **language selector in its top bar** (switching re-renders
-the current step in place, nothing entered is lost), a stepper (completed
+wizard. Both screens share a top bar with the **Cachet logo and name** on the
+left and, on the right, the **language selector** (switching re-renders the
+current step in place, nothing entered is lost) next to a **♥ Support
+Cachet** link that opens the payment page in the browser. The wizard adds a
+stepper (completed
 steps green, problems red, unreached steps disabled), the current step's form
 on the left, contextual help on the right, and Previous/Next buttons that
 name the target step. **Cancel** asks for confirmation, then resets everything
