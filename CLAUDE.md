@@ -38,11 +38,21 @@ through `i18n.tr(key, **fmt)`, never a hard-coded literal.
   all non-widget logic it needs is imported from the core, all its text from
   `i18n.py`.
 - `i18n.py` — GUI localization: `LANGUAGES` (en/fr/nl/de/es/pt),
-  `tr(key, **fmt)`, `set_language`, `system_language` and the full `CATALOG`
-  (key → per-language strings). Import-safe **without tkinter**;
-  `test_i18n.py` enforces that every key exists in every language and that
-  placeholders match the English reference — add new GUI strings there in
-  ALL six languages.
+  `tr(key, **fmt)`, `set_language`, `system_language` and the UI `CATALOG`
+  (key → per-language strings). Texts may carry a light **`**bold**`**
+  markup; `split_markup(text)` (pure) turns it into `(segment, is_bold)`
+  pairs that the GUI renders through a text tag. `DOC_SECTIONS` /
+  `DOC_SOURCES` (title key → URL) drive the "Full documentation" popup.
+  Import-safe **without tkinter**; `test_i18n.py` enforces that every key
+  exists in every language, that placeholders match the English reference,
+  that bold markers are balanced with the same count per language, and that
+  the documentation is genuinely translated — add new GUI strings in ALL
+  six languages.
+- `i18n_docs.py` — the long-form documentation of the popup (`DOCS_CATALOG`:
+  `docs.modes/levels/tiers/glossary/glance`, `docs.sources_*`, `docs.src.*`
+  link titles) in six languages, merged into `i18n.CATALOG` at import so
+  `tr()` and the test invariants cover it. Kept apart so `i18n.py` stays
+  readable; bundled into the GUI binary through the import chain.
 - `trust.py` — EU trusted-list (LOTL, ETSI TS 119 612) trust provider for LTV:
   LOTL → Belgian list → granted CA/QC-for-eSignatures certs as
   `ValidationContext` anchors; JSON cache under `platformdirs` (24 h TTL,
@@ -90,7 +100,7 @@ through `i18n.tr(key, **fmt)`, never a hard-coded literal.
 ./venv/bin/python -m unittest -v
 
 # Syntax check everything:
-./venv/bin/python -m py_compile sign_pdfs_beid.py gui.py gui_main.py trust.py azure_signer.py i18n.py test_sign_pdfs_beid.py test_trust.py test_azure.py test_i18n.py
+./venv/bin/python -m py_compile sign_pdfs_beid.py gui.py gui_main.py trust.py azure_signer.py i18n.py i18n_docs.py test_sign_pdfs_beid.py test_trust.py test_azure.py test_i18n.py
 ```
 
 ### CLI flags
@@ -211,13 +221,19 @@ reused by the GUI canvas.
 
 `CachetApp` (a `ctk.CTk`) opens on a **landing page** (overview text, language
 selector, Start bottom-right — no stepper there); Start builds the **wizard**:
-a stepper bar on top, a split body (form on the left inside a
-`CTkScrollableFrame`, per-step contextual help `i18n` text on the right), and
-a footer whose Previous/Next labels **name the target step**
-(`nav.next`/`nav.previous`). Cancel opens a confirm modal; confirming (and
-Finish on the last step) calls `_reset_state()` and returns to the landing
-page. All texts come from `i18n.tr` — the language is chosen on the landing
-page (`system_language()` default) and fixed for the wizard's lifetime.
+a **top bar with the same language selector** (`_wizard_lang_menu`), a
+stepper bar, a split body (form on the left inside a `CTkScrollableFrame`,
+per-step contextual help `i18n` text on the right, rendered with
+`_fill_textbox` so `**bold**` markup shows as bold), and a footer whose
+Previous/Next labels **name the target step** (`nav.next`/`nav.previous`).
+Cancel opens a confirm modal; confirming (and Finish on the last step) calls
+`_reset_state()` and returns to the landing page. All texts come from
+`i18n.tr`; the language defaults to `system_language()` and can be switched
+at any step: `_on_wizard_language_change` sets the language, closes the
+(language-bound) docs popup, then rebuilds the chrome and the current step
+in place (`_build_wizard()` + `_goto_step(min(step, _first_incomplete()))`)
+— state lives on the app, so nothing the user entered is lost. The selector
+is disabled while a batch runs.
 
 The 8 steps (`_STEP_KEYS` → `_build_step_<key>`): (1) template, (2) files,
 (3) validation — auto-runs on first entry, pass/fail table, plus a localized
@@ -226,16 +242,25 @@ when some files' page count differs from the template; it maps to
 `RunConfig.page_anchor` for the whole batch and re-validates on change,
 (4) output folder, (5) signature type (beid/azure/image radios + per-input
 hints + **PAdES level selector**, default `b-lta`; azure panel appears only in
-azure mode; "Full documentation" popup stays English), (6) placement — page
-preview + click for **all** modes (image mode adds the image picker) plus a
-manual **target-page field** (`page_text`) that follows the preview when in
-range and only warns when beyond the template; while a page anchor applies the
-field and Prev/Next are **disabled**, the preview is **locked** onto the
-template's first/last page (label says "locked") and a position clicked on
-another page is dropped (`_sync_anchor_page`) — `page` and `page_anchor` stay
-mutually exclusive in the built `RunConfig`, (7) signing — config summary
-(names the anchor when active) + Start + progress bar, (8) results report
-table.
+azure mode; the **"Full documentation" popup is localized**: `_show_docs_popup`
+renders `i18n.DOC_SECTIONS` with bold markup, then `i18n.DOC_SOURCES` as
+clickable links — `tag_bind` → `webbrowser.open`), (6) placement — when
+`count_mismatch` is set, a **mirror of the step-3 first/last selector** sits
+at the top (`place_anchor_row`, same shared `anchor_choice`, re-validates on
+change and shows "N/M accepted" via `_update_place_anchor_widgets`), then the
+page preview + click for **all** modes (image mode adds the image picker)
+plus a manual **target-page field** (`page_text`) that follows the preview
+when in range and only warns when beyond the template; while a page anchor
+applies the field and Prev/Next are **disabled**, the preview is **locked**
+onto the template's first/last page (label says "locked") and a position
+clicked on another page is dropped (`_sync_anchor_page`) — `page` and
+`page_anchor` stay mutually exclusive in the built `RunConfig`, (7) signing —
+config summary (names the anchor when active), in beid mode a **green
+"insert your eID card" box** (`card_box`, hidden by `_launch`, shown again by
+`_show_card_box` when the batch fails to start), Start + progress bar,
+(8) results report table + an **"Open output folder"** button
+(`core.open_in_file_manager`: `os.startfile` / `open` / `xdg-open`; failures
+are shown inline, never raised into the Tk loop).
 
 Step state drives the chrome (`_refresh_chrome`): per-step predicates
 `_step_complete` / `_step_error` color the stepper chips — current = accent,
@@ -243,8 +268,10 @@ passed & clean = light-green border (`_COL_DONE`), problems = light-red
 (`_COL_ERROR`, e.g. rejected files on step 3, missing azure vault/anchors on
 step 5), reachable-pending = gray, beyond the first incomplete step = disabled
 (`_COL_LOCKED`) — a step is never shown green just because its *defaults* are
-valid. Next is disabled until the current step is complete; ALL navigation
-(stepper, Prev/Next, Cancel) locks while `_running`. Editing upstream state
+valid. Next is enabled only while the current step **and every step before
+it** are complete (`i < _first_incomplete()` — the step-6 selector can
+re-validate step 3 down to zero accepted files); ALL navigation (stepper,
+Prev/Next, Cancel, language selector) locks while `_running`. Editing upstream state
 invalidates downstream results (`validation_results`, `run_results`) so the
 gating recomputes. Step content is **rebuilt on every entry** (state lives on
 the app, widgets are disposable) — update helpers guard widget access with
@@ -359,10 +386,17 @@ apt install).
   `output_dir`…), walk with `app._goto_step(i)`, call `app.update()`, and
   screenshot the window by id with ImageMagick
   (`import -window <hex winfo_id> shot.png`) on `DISPLAY=:0` — this catches real
-  CustomTkinter API errors that `py_compile` cannot. Step 3 auto-validates on
+  CustomTkinter API errors that `py_compile` cannot. If a GUI test run stalls
+  at window creation with ~0 % CPU, it is Tk waiting on the ibus X input-method
+  bridge (`XCreateIC`/`_XimRead`), not the app: run with
+  `XMODIFIERS=@im=none` (and `PYTHONFAULTHANDLER=1 timeout -s ABRT …` to get a
+  stack if it ever recurs). Never run several GUI suites concurrently on the
+  same display. Step 3 auto-validates on
   entry; step 6 builds `app.canvas`; a finished batch auto-advances to step 8.
-- **i18n**: `test_i18n.py` (headless) checks catalog completeness and
-  placeholder parity across the six languages.
+- **i18n**: `test_i18n.py` (headless) checks catalog completeness,
+  placeholder parity, balanced / equal-count `**bold**` markup, and that the
+  docs catalog (`i18n_docs.py`) is merged and genuinely translated in all six
+  languages.
 - **vignette appearance** (beid): render `build_stamp_style(identity)` via
   `pyhanko.stamp.TextStamp.apply()` onto a copy with an explicit
   `BoxConstraints(width=_STAMP_W, height=_STAMP_H)`, then rasterize with

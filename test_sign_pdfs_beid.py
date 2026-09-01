@@ -799,9 +799,20 @@ class _GuiTestBase(unittest.TestCase):
         self.types = types
 
     def make_app(self):
+        import contextlib
+        import tkinter
+
         import gui
         app = gui.CachetApp(self.types.SimpleNamespace(lib=None))
         app.update()
+
+        def _cleanup():
+            # a root leaked by a failing test stays tkinter._default_root and
+            # breaks every later canvas test ("pyimage… doesn't exist")
+            with contextlib.suppress(tkinter.TclError):
+                app.destroy()
+
+        self.addCleanup(_cleanup)
         return app
 
     def wizard_with_state(self, app, tpl, out, inputs=None):
@@ -1059,6 +1070,353 @@ class GuiPageAnchor(_GuiTestBase):
         self.assertEqual(step, 7)                 # auto-advanced to the report
         self.assertEqual(n_rows, 1)
         self.assertTrue((out / "short_signe.pdf").exists())
+
+
+class OpenFolder(unittest.TestCase):
+    """`open_in_file_manager`: per-platform command, errors propagate."""
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp()
+
+    def test_platform_commands(self):
+        calls = []
+
+        def popen(cmd, **kw):
+            calls.append(cmd)
+
+        core.open_in_file_manager(self.out, system="Linux", popen=popen)
+        core.open_in_file_manager(Path(self.out), system="Darwin", popen=popen)
+        self.assertEqual(calls, [["xdg-open", self.out], ["open", self.out]])
+        started = []
+        core.open_in_file_manager(self.out, system="Windows",
+                                  popen=popen, startfile=started.append)
+        self.assertEqual(started, [self.out])
+        self.assertEqual(len(calls), 2)       # Windows never spawns a process
+
+    def test_missing_tool_propagates(self):
+        def popen(cmd, **kw):
+            raise FileNotFoundError(cmd[0])
+
+        with self.assertRaises(FileNotFoundError):
+            core.open_in_file_manager(self.out, system="Linux", popen=popen)
+
+    def test_missing_folder_raises_before_launching(self):
+        calls = []
+        with self.assertRaises(FileNotFoundError):
+            core.open_in_file_manager(Path(self.out) / "nope", system="Linux",
+                                      popen=lambda cmd, **kw: calls.append(cmd))
+        self.assertEqual(calls, [])
+
+
+class GuiWizardExtras(_GuiTestBase):
+    """Language selector inside the wizard, bold help markup, localized docs
+    popup with clickable sources, step-6 first/last mirror, step-7 eID card
+    box, step-8 'open output folder'."""
+
+    def test_language_switch_inside_wizard_keeps_state(self):
+        import i18n
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
+        app = self.make_app()
+        try:
+            self.wizard_with_state(app, tpl, self.tmp / "o")   # lands on step 3
+            self.assertEqual(app.step_index, 2)
+            self.assertEqual(str(app._wizard_lang_menu.cget("state")), "normal")
+            app._on_wizard_language_change("Français")
+            app.update()
+            self.assertEqual(i18n.get_language(), "fr")
+            self.assertEqual(app._stepper_btns[0].cget("text"), "1. Modèle")
+            self.assertEqual(app._wizard_lang_menu.get(), "Français")
+            self.assertEqual(app.step_index, 2)                # same step
+            self.assertEqual(app.template_path, tpl)           # state kept
+            self.assertEqual(len(app.valid_paths), 1)
+            self.assertEqual(len(app.valid_table.get_children()), 1)  # rebuilt
+        finally:
+            i18n.set_language("en")
+            app.destroy()
+
+    def test_language_switch_ignored_while_running(self):
+        import i18n
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
+        app = self.make_app()
+        try:
+            self.wizard_with_state(app, tpl, self.tmp / "o")
+            app._running = True                        # what _launch() sets
+            app._refresh_chrome()
+            self.assertEqual(str(app._wizard_lang_menu.cget("state")), "disabled")
+            app._on_wizard_language_change("Français")
+            app.update()
+            self.assertEqual(i18n.get_language(), "en")
+            self.assertEqual(app._stepper_btns[0].cget("text"), "1. Template")
+            app._running = False
+            app._refresh_chrome()
+            self.assertEqual(str(app._wizard_lang_menu.cget("state")), "normal")
+        finally:
+            i18n.set_language("en")
+            app.destroy()
+
+    def test_help_panel_renders_bold_markup(self):
+        from tkinter import font as tkfont
+
+        from i18n import tr
+        app = self.make_app()
+        app._start_wizard()            # step-1 help carries a **bold** lead-in
+        app.update()
+        text = app._help_box.get("1.0", "end")
+        self.assertNotIn("**", text)
+        self.assertTrue(app._help_box.tag_ranges("bold"))
+        self.assertIn(tr("step.template.help").replace("**", "")[:40], text)
+        inner = app._help_box._textbox                 # the tag really is bold
+        tag_font = inner.tag_cget("bold", "font")
+        self.assertTrue(tag_font)
+        self.assertEqual(tkfont.Font(font=tag_font).actual("weight"), "bold")
+        body = tkfont.Font(font=inner.cget("font")).actual()
+        self.assertEqual(tkfont.Font(font=tag_font).actual("size"), body["size"])
+        app.destroy()
+
+    def test_docs_popup_is_localized_with_links(self):
+        import customtkinter as ctk
+
+        import i18n
+        from i18n import tr
+        app = self.make_app()
+        app._start_wizard()
+        try:
+            i18n.set_language("fr")
+            app._show_docs_popup()
+            app.update()
+            win = app._docs_win
+            self.assertTrue(win.winfo_exists())
+            box = next(w for w in win.winfo_children()
+                       if isinstance(w, ctk.CTkTextbox))
+            text = box.get("1.0", "end")
+            self.assertNotIn("**", text)
+            self.assertIn(tr("docs.modes").replace("**", "")[:30], text)
+            self.assertIn(tr("docs.src.eidas"), text)
+            for i, (_, url) in enumerate(i18n.DOC_SOURCES):
+                self.assertTrue(box.tag_ranges(f"src{i}"), url)
+                self.assertIn(url, text)
+            app._on_wizard_language_change("English")   # closes the popup
+            app.update()
+            self.assertFalse(win.winfo_exists())
+        finally:
+            i18n.set_language("en")
+            app.destroy()
+
+    def test_docs_source_click_opens_browser_and_popup_is_idempotent(self):
+        import customtkinter as ctk
+
+        import gui
+        import i18n
+        app = self.make_app()
+        app._start_wizard()
+        opened = []
+        orig = gui.webbrowser.open
+        gui.webbrowser.open = lambda url, *a, **k: opened.append(url)
+        try:
+            app._show_docs_popup()
+            app.update()
+            win = app._docs_win
+            app._show_docs_popup()                     # second call: same window
+            app.update()
+            self.assertIs(app._docs_win, win)
+            box = next(w for w in win.winfo_children()
+                       if isinstance(w, ctk.CTkTextbox))
+            inner = box._textbox
+            start = box.tag_ranges("src0")[0]
+            box.see(start)
+            win.update()
+            x, y, _w, h = inner.bbox(start)
+            # tag bindings fire for the char under the Text's "current" mark,
+            # which only pointer motion updates -> move there before clicking
+            for seq in ("<Enter>", "<Motion>", "<Button-1>", "<ButtonRelease-1>"):
+                inner.event_generate(seq, x=x + 2, y=y + h // 2)
+                win.update()
+            app.update()
+            self.assertEqual(opened, [i18n.DOC_SOURCES[0][1]])
+        finally:
+            gui.webbrowser.open = orig
+            app.destroy()
+
+    def test_docs_popup_closed_on_finish_and_landing_language_change(self):
+        import i18n
+        app = self.make_app()
+        try:
+            app._start_wizard()
+            app._show_docs_popup()
+            app.update()
+            win = app._docs_win
+            app._finish()                              # back to the landing page
+            app.update()
+            self.assertFalse(win.winfo_exists())       # no orphan popup
+            app._start_wizard()
+            app._show_docs_popup()
+            app.update()
+            win = app._docs_win
+            app._finish()
+            app._on_language_change("Français")        # landing-page selector
+            app.update()
+            self.assertFalse(win.winfo_exists())
+            app._start_wizard()
+            app._show_docs_popup()                     # fresh, in French
+            app.update()
+            self.assertIsNot(app._docs_win, win)
+        finally:
+            i18n.set_language("en")
+            app.destroy()
+
+    def test_step6_mirrors_first_last_selector_only_on_mismatch(self):
+        from i18n import tr
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842), (595, 842)])
+        same = make_pdf(self.tmp / "same.pdf", [(595, 842), (595, 842)])
+        short = make_pdf(self.tmp / "short.pdf", [(595, 842)])
+        app = self.make_app()
+        self.wizard_with_state(app, tpl, self.tmp / "o", inputs=[same])
+        app._goto_step(5)
+        app.update()
+        self.assertIsNone(app.place_anchor_row)          # no mismatch: no row
+        app.destroy()
+
+        app = self.make_app()
+        self.wizard_with_state(app, tpl, self.tmp / "o", inputs=[same, short])
+        app._goto_step(5)
+        app.update()
+        self.assertTrue(app.place_anchor_row.winfo_manager())
+        self.assertEqual(app.place_anchor_menu.get(), tr("anchor.opt_last"))
+        self.assertIn("2/2", app.place_anchor_status.cget("text"))
+        self.assertEqual(app.cur_page, 1)                # locked on last page
+        app._on_anchor_menu(tr("anchor.opt_first"))      # the step-6 menu
+        app.update()
+        self.assertEqual(app._page_anchor(), "first")
+        self.assertEqual(app.cur_page, 0)                # preview follows
+        self.assertEqual(app.place_anchor_menu.get(), tr("anchor.opt_first"))
+        self.assertEqual(len(app.valid_paths), 2)
+        app.destroy()
+
+    def test_step6_anchor_change_rejecting_everything_locks_next(self):
+        import gui
+
+        from i18n import tr
+        # 1-page file: matches the template's LAST page only -> accepted on
+        # "last", rejected on "first" -> 0 valid documents -> Next locks.
+        tpl = make_pdf(self.tmp / "t.pdf", [(300, 300), (595, 842)])
+        short = make_pdf(self.tmp / "short.pdf", [(595, 842)])
+        app = self.make_app()
+        self.wizard_with_state(app, tpl, self.tmp / "o", inputs=[short])
+        app._goto_step(5)                  # beid: placement complete w/o click
+        app.update()
+        self.assertEqual(str(app._btn_next.cget("state")), "normal")
+        app._on_anchor_menu(tr("anchor.opt_first"))
+        app.update()
+        self.assertEqual(app.valid_paths, [])
+        self.assertIn("0/1", app.place_anchor_status.cget("text"))
+        self.assertEqual(str(app._btn_next.cget("state")), "disabled")
+        self.assertEqual(app._stepper_btns[2].cget("border_color"), gui._COL_ERROR)
+        # the user is not stranded: the current chip stays enabled and
+        # Previous still goes back (step 6 -> 5), even though step 3 is broken
+        self.assertEqual(str(app._stepper_btns[5].cget("state")), "normal")
+        self.assertEqual(str(app._btn_prev.cget("state")), "normal")
+        app._nav_prev()
+        app.update()
+        self.assertEqual(app.step_index, 4)
+        app._goto_step(6)                          # forward stays locked
+        self.assertEqual(app.step_index, 4)
+        app.destroy()
+
+    def test_card_box_only_in_beid_mode(self):
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
+        app = self.make_app()
+        self.wizard_with_state(app, tpl, self.tmp / "o")
+        app.mode_var.set("beid")
+        app._goto_step(6)
+        app.update()
+        self.assertTrue(app.card_box.winfo_manager())
+        # image mode: step 6 needs an image + a position to be complete
+        app.mode_var.set("image")
+        app.image_path = make_png(self.tmp / "s.png")
+        app.place_page, app.place_x, app.place_y = 1, 10.0, 10.0
+        app._goto_step(6)
+        app.update()
+        self.assertEqual(app.step_index, 6)
+        self.assertFalse(app.card_box.winfo_manager())
+        # azure: no card involved, never shown
+        app.mode_var.set("azure")
+        app.azure_anchors_path = tpl               # any file satisfies _mode_error
+        app._goto_step(6)
+        app.update()
+        self.assertEqual(app.step_index, 6)
+        self.assertFalse(app.card_box.winfo_manager())
+        # beid, coming back after a finished batch: not shown either
+        app.mode_var.set("beid")
+        app.run_results = [core.DocResult(tpl, self.tmp / "o" / "t_signe.pdf", True, "ok")]
+        app._goto_step(6)
+        app.update()
+        self.assertFalse(app.card_box.winfo_manager())
+        app.destroy()
+
+    def test_card_box_hidden_on_launch_and_back_after_failure(self):
+        import time
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
+        app = self.make_app()
+        self.wizard_with_state(app, tpl, self.tmp / "o")
+        app.mode_var.set("beid")
+        app._goto_step(6)
+        app.update()
+
+        def boom(*a, **k):
+            raise SystemExit("No card reader detected.")
+
+        orig, core.process_batch = core.process_batch, boom
+        try:
+            app._launch()
+            self.assertTrue(app._running)
+            self.assertFalse(app.card_box.winfo_manager())   # hidden while running
+            for _ in range(60):
+                app.update()
+                time.sleep(0.05)
+                if not app._running:
+                    break
+            app.update()
+        finally:
+            core.process_batch = orig
+        self.assertIn("reader", app.run_error)
+        self.assertTrue(app.card_box.winfo_manager())        # back for a retry
+        slaves = app.card_box.master.pack_slaves()          # …and above Start
+        self.assertLess(slaves.index(app.card_box), slaves.index(app.launch_btn))
+        app.destroy()
+
+    def test_open_folder_button_uses_core_helper(self):
+        tpl = make_pdf(self.tmp / "t.pdf", [(595, 842)])
+        out = self.tmp / "o"
+        app = self.make_app()
+        self.wizard_with_state(app, tpl, out)
+        app.run_results = [core.DocResult(tpl, out / "t_signe.pdf", True, "ok")]
+        app._goto_step(7)
+        app.update()
+        self.assertEqual(app.step_index, 7)
+        opened = []
+        orig = core.open_in_file_manager
+        core.open_in_file_manager = lambda p, **k: opened.append(Path(p))
+        try:
+            app.open_folder_btn.invoke()
+            self.assertEqual(opened, [out])
+            self.assertEqual(app.open_folder_lbl.cget("text"), "")
+
+            def boom(p, **k):
+                raise FileNotFoundError("xdg-open")
+
+            core.open_in_file_manager = boom
+            app.open_folder_btn.invoke()
+            self.assertIn("xdg-open", app.open_folder_lbl.cget("text"))
+            core.open_in_file_manager = lambda p, **k: opened.append(Path(p))
+            app.open_folder_btn.invoke()               # retry succeeds -> cleared
+            self.assertEqual(app.open_folder_lbl.cget("text"), "")
+            app.output_dir = None                      # defensive guard
+            opened.clear()
+            app._open_output_folder()
+            self.assertEqual(opened, [])
+        finally:
+            core.open_in_file_manager = orig
+        app.destroy()
 
 
 class HeadlessImport(unittest.TestCase):
