@@ -27,3 +27,4 @@ wine_out/
 # --- Misc ---
 *.log
 .DS_Store
+.serena/
