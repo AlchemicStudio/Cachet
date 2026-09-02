@@ -58,7 +58,7 @@ _HELP_PANEL_W = 380  # right column (contextual help) width, px
 _HINT_WRAP = 520     # px; CTk labels do not auto-wrap
 
 _LOGO_SIZE = 30      # top-bar logo height, px (width follows the aspect)
-_SUPPORT_URL = "https://buy.stripe.com/fZu28lbKv0gQfmvgP96oo01"
+_SUPPORT_URL = "https://donate.stripe.com/4gM8wJ6qbgfO7U342n6oo02"
 
 # Wizard steps, in order. Each key maps to the i18n entries
 # step.<key>.short / step.<key>.title / step.<key>.help and to a
