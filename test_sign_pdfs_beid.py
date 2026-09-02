@@ -1436,7 +1436,7 @@ class GuiTopBar(_GuiTestBase):
             self.assertEqual(app._support_btn.cget("text"), tr("support.button"))
             app._support_btn.invoke()
             self.assertEqual(
-                opened, ["https://buy.stripe.com/fZu28lbKv0gQfmvgP96oo01"])
+                opened, ["https://donate.stripe.com/4gM8wJ6qbgfO7U342n6oo02"])
             app._start_wizard()                    # wizard top bar too
             app.update()
             self.assertEqual(app._brand_name_lbl.cget("text"), "Cachet")
