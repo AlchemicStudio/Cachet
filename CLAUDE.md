@@ -4,316 +4,455 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A batch PDF-signing app for Belgian electronic identity cards (eID), with two
-signature modes, template-based input validation, and a CustomTkinter GUI that
+A batch PDF-signing app for Belgian electronic identity cards (eID), with
+three modes, template-based input validation, and a CustomTkinter GUI that
 wraps the same logic as the headless CLI.
 
-- **`beid` mode** — cryptographic eID signature (pyHanko over the eID PKCS#11
-  middleware), with a visible **vignette** (cardholder photo + "Signed by:" /
-  name / date) bottom-right of the last page. Signatures are **PAdES,
-  default level B-LTA** (timestamp + embedded revocation info + archival
-  timestamp chain), selectable via `--pades-level`; levels ≥ b-t need network.
-- **`azure` mode** — personal **AES (advanced, not qualified)** signature with
-  the signed-in user's own certificate + non-exportable key in **Azure Key
-  Vault**, after ONE interactive Microsoft Entra ID login per batch. Only the
-  digest is sent to Azure. Reuses the PAdES level pipeline; LTV trust comes
-  from the **internal CA chain** (`--azure-trust-anchors`), NEVER the EU LOTL.
-- **`image` mode** — stamps a user-supplied image onto a chosen page at a chosen
-  position. See the design note below: **image mode does NOT use the card** and
-  is not a cryptographic signature; it is the alternative to `beid`.
+- **`beid`** — cryptographic eID signature (pyHanko over the eID PKCS#11
+  middleware) with a visible **vignette** (cardholder photo + "Signed by:" /
+  name / date), bottom-right of the last page by default. **PAdES, default
+  level B-LTA** (`--pades-level`); levels ≥ b-t need network.
+- **`azure`** — personal **AES (advanced, not qualified)** signature with the
+  signed-in user's certificate + non-exportable key in **Azure Key Vault**,
+  after ONE Microsoft Entra ID login per batch. LTV trust comes from the
+  **internal CA chain** (`--azure-trust-anchors`), NEVER the EU LOTL.
+- **`image`** — **visual signatures only**: typed texts, images or hand-drawn
+  signatures stamped on chosen pages. **No card**, not a cryptographic
+  signature. (Name kept for backward compatibility.)
 
-No build system, no linter config. Tests use stdlib `unittest`.
-Code comments and CLI text are in English; the GUI is **localized**
-(EN/FR/NL/DE/ES/PT) through `i18n.py` — every user-visible GUI string goes
-through `i18n.tr(key, **fmt)`, never a hard-coded literal.
+`beid`/`azure` can carry the same N **visual stamps** (`RunConfig.stamps`)
+plus exactly ONE cryptographic signature per document. The GUI **persists**
+the signature library, placements and wizard settings in a user profile
+(`profile_store.py`); the CLI never reads it.
+
+Vocabulary trap: "visual signature" (user wording) = `Stamp` (`stamps.py`).
+The older `_STAMP_*` constants and `build_stamp_style` in the core mean the
+**vignette** of the cryptographic signature and were NOT renamed.
+
+No build system, no linter config; tests use stdlib `unittest`. Comments and
+CLI text are in English; the GUI is **localized** (EN/FR/NL/DE/ES/PT): every
+GUI string goes through `i18n.tr(key, **fmt)`, in ALL six languages.
 
 ## Modules
 
-- `sign_pdfs_beid.py` — **core + CLI entry point**. All business logic lives
-  here (eID signing, vignette, image insertion, validation, placement math,
-  `RunConfig`/`process_batch`, arg parsing). Imports cleanly **without tkinter**.
-- `gui.py` — CustomTkinter GUI: a **landing page + 8-step wizard** (see "GUI
-  workflow"). Imported **only** when `--gui` is passed (lazy), so the
-  CLI/core/tests never require a display. It is a thin façade over the core;
-  all non-widget logic it needs is imported from the core, all its text from
-  `i18n.py`.
-- `i18n.py` — GUI localization: `LANGUAGES` (en/fr/nl/de/es/pt),
-  `tr(key, **fmt)`, `set_language`, `system_language` and the UI `CATALOG`
-  (key → per-language strings). Texts may carry a light **`**bold**`**
-  markup; `split_markup(text)` (pure) turns it into `(segment, is_bold)`
-  pairs that the GUI renders through a text tag. `DOC_SECTIONS` /
-  `DOC_SOURCES` (title key → URL) drive the "Full documentation" popup.
-  Import-safe **without tkinter**; `test_i18n.py` enforces that every key
-  exists in every language, that placeholders match the English reference,
-  that bold markers are balanced with the same count per language, and that
-  the documentation is genuinely translated — add new GUI strings in ALL
-  six languages.
-- `i18n_docs.py` — the long-form documentation of the popup (`DOCS_CATALOG`:
-  `docs.modes/levels/tiers/glossary/glance`, `docs.sources_*`, `docs.src.*`
-  link titles) in six languages, merged into `i18n.CATALOG` at import so
-  `tr()` and the test invariants cover it. Kept apart so `i18n.py` stays
-  readable; bundled into the GUI binary through the import chain.
-- `trust.py` — EU trusted-list (LOTL, ETSI TS 119 612) trust provider for LTV:
-  LOTL → Belgian list → granted CA/QC-for-eSignatures certs as
-  `ValidationContext` anchors; JSON cache under `platformdirs` (24 h TTL,
-  `--refresh-trust-list`); raises actionable `TrustListError` offline.
-  Import-safe without tkinter; network injectable (`fetcher=`) for tests.
-  **beid-mode only** (azure uses the internal CA instead).
-- `azure_signer.py` — azure mode: Entra credential factory + process-wide
-  cache (`get_cached_credential` — one login per batch, shared with the GUI
-  sign-in), token-claims user resolution (UPN/oid, decoded locally, never
-  logged), per-user key/cert name template (`sig-{upn}`, sanitised; explicit
-  override flagged), `AzureKeyVaultSigner` (pyHanko `Signer`: hashes locally,
-  sends ONLY the digest to `CryptographyClient.sign`, maps key type +
-  `--digest` to RS256/…/ES256/…, converts ECDSA r||s → DER). Azure SDK
-  imports are lazy; clients injectable for tests.
-- `test_sign_pdfs_beid.py`, `test_trust.py`, `test_azure.py`, `test_i18n.py`
-  — headless `unittest` suites (no card, no network; the `Gui*` classes need
-  a display and skip themselves otherwise).
-- `pdfs/` (`../pdfs`), `signes/` (`../signes`) — sample inputs / output dir.
-- `venv/` — Python virtualenv (see "tkinter in this environment").
+- `sign_pdfs_beid.py` — **core + CLI entry point** (signing, vignette,
+  validation, placement math, `RunConfig`/`process_batch`, arg parsing).
+- `stamps.py` — visual signatures: the frozen `Stamp` dataclass, bundled
+  fonts, text / freehand rendering, image normalisation, `stamp_content` (THE
+  single source of pixels + size for the PDF and the GUI preview), validation,
+  the `--signatures` JSON, `apply_stamps(writer, …)`. Every failure is a
+  `StampError` (a `ValueError`).
+- `profile_store.py` — the GUI's user profile (see "Persistence").
+- `gui.py` — CustomTkinter **landing page + 8-step wizard**, imported
+  **only** with `--gui` (lazy), so the CLI/core/tests never need a display.
+- `i18n.py` — `tr`, `set_language`, `system_language`, the UI `CATALOG`;
+  texts may carry a light `**bold**` markup (`split_markup`). `i18n_docs.py`
+  holds the long documentation-popup texts, merged into the catalog at
+  import. `test_i18n.py` enforces: every key in all six languages,
+  placeholders matching English, balanced bold markers with equal counts.
+- `trust.py` — EU trusted-list (LOTL, ETSI TS 119 612) anchors for LTV: LOTL →
+  Belgian list → CA/QC-for-eSignatures certs; JSON cache (24 h TTL,
+  `--refresh-trust-list`); actionable `TrustListError` offline; network
+  injectable (`fetcher=`). **beid only**.
+- `azure_signer.py` — Entra credential + process-wide cache
+  (`get_cached_credential`: one login per batch, shared with the GUI sign-in),
+  user from token claims (decoded locally, never logged), per-user key/cert
+  name template (`sig-{upn}`; explicit override flagged),
+  `AzureKeyVaultSigner` (hashes locally, sends ONLY the digest, ECDSA r||s →
+  DER). Azure SDK imports are lazy; clients injectable for tests.
+- `test_*.py` — headless suites (no card, no network); the `Gui*` classes
+  skip themselves without a display.
+
+Import graph (no cycles — keep it that way):
+
+```
+stamps         -> stdlib, PIL, pyhanko          (nothing of this app)
+profile_store  -> stdlib, stamps, platformdirs  (lazy)
+sign_pdfs_beid -> stamps                        (NEVER profile_store)
+gui            -> sign_pdfs_beid, stamps, profile_store, i18n
+```
+
+- Only `gui.py` / `gui_main.py` need tkinter. `stamps` and
+  `profile_store` never import the core: it is the CLI entry script
+  (`__main__`), a module importing it would load it twice.
+- The core never imports `profile_store`: headless runs stay deterministic.
+- Name shadowing: `stamps` is also a `RunConfig` field and a `sign_one`
+  keyword, so the core imports **names** (`from stamps import Stamp, …`);
+  `gui.py` and `profile_store.py` use `import stamps as stamplib`.
 
 ## Commands
 
 ```bash
-# eID signing (vignette), new flat flags — PAdES B-LTA by default:
+# eID signing (PAdES B-LTA by default); legacy positionals still work:
 ./venv/bin/python sign_pdfs_beid.py --input ../pdfs --output ../signes --mode beid
+./venv/bin/python sign_pdfs_beid.py ../pdfs ../signes --pades-level b-b   # offline
 
-# eID signing, offline basic level; legacy positional form (still supported)
-./venv/bin/python sign_pdfs_beid.py ../pdfs ../signes --pades-level b-b
+# azure mode (one Microsoft login per batch):
+./venv/bin/python sign_pdfs_beid.py --mode azure --azure-vault-url https://x.vault.azure.net \
+  --azure-trust-anchors ./internal-ca-chain.pem --input ../pdfs --output ../signes
 
-# azure mode (personal Key Vault cert; one Microsoft login per batch):
-./venv/bin/python sign_pdfs_beid.py --mode azure \
-  --azure-vault-url https://myorg-sign.vault.azure.net \
-  --azure-trust-anchors ./internal-ca-chain.pem \
+# visual signatures, no card: one text (or --image-path img.png) / a JSON list
+./venv/bin/python sign_pdfs_beid.py --mode image --template ../pdfs/MODELE.pdf \
+  --text "Jane Doe\nApproved, {date}" --font great-vibes --color "#1A2B8C" \
+  --page last --x 360 --y 120 --input ../pdfs --output ../signes
+# --signatures also works with --mode beid|azure (stamped BEFORE the signature):
+./venv/bin/python sign_pdfs_beid.py --mode image --signatures sigs.json \
   --input ../pdfs --output ../signes
 
-# image stamp (no card), with template validation:
-./venv/bin/python sign_pdfs_beid.py --mode image \
-  --template ../pdfs/MODELE.pdf --input ../pdfs --output ../signes \
-  --image-path signature.png --page 1 --x 360 --y 150
-
-# GUI:
+# GUI — it loads and AUTO-SAVES the user profile: for development export
+# CACHET_CONFIG_DIR / CACHET_DATA_DIR to scratch folders first.
 ./venv/bin/python sign_pdfs_beid.py --gui
 
-# Tests (headless, no card):
-./venv/bin/python -m unittest -v
+# Tests, headless (the Gui* classes skip themselves):
+env -u DISPLAY ./venv/bin/python -m unittest -v
+# GUI suites — ONE run at a time; skips are failures with CACHET_REQUIRE_GUI=1
+# (no xvfb-run on this workstation: use DISPLAY=:0 instead of `xvfb-run -a`):
+CACHET_REQUIRE_GUI=1 XMODIFIERS=@im=none PYTHONFAULTHANDLER=1 timeout -s ABRT 900 \
+  xvfb-run -a ./venv/bin/python -m unittest -v -k Gui
 
-# Syntax check everything:
-./venv/bin/python -m py_compile sign_pdfs_beid.py gui.py gui_main.py trust.py azure_signer.py i18n.py i18n_docs.py test_sign_pdfs_beid.py test_trust.py test_azure.py test_i18n.py
+# Syntax check everything (all modules and tests sit at the repo root):
+./venv/bin/python -m py_compile *.py
 ```
 
-### CLI flags
+### CLI flags (the non-obvious parts; `--help` has the full list)
 
-| flag | meaning |
-|------|---------|
-| `--gui` | launch the GUI; otherwise run headless. Running without `--gui` never opens a window. |
-| `--input <path…>` | files and/or directories to process (dirs are globbed for `*.pdf`). |
-| `--output <dir>` | output folder; files are written `{stem}_signe.pdf`, **never overwriting** (collisions get ` - 1`, ` - 2`, …). |
-| `--template <pdf>` | model PDF; if given, inputs are validated against it (CLI **and** GUI). |
-| `--mode beid\|image\|azure` | signature mode (default `beid`). |
-| `--azure-vault-url` / `--azure-key-name` / `--azure-key-name-template` / `--azure-cert-name` / `--azure-auth` / `--azure-trust-anchors` / `--azure-graph` | azure mode config; each falls back to its `CACHET_AZURE_*` env var. Vault URL required; key derived per-user from the template (default `sig-{upn}`; explicit override flagged); auth `interactive`/`device-code` (CLI default)/`default` (CI only, breaks per-user model); trust anchors = internal CA PEM/DER file-or-dir, required when LTV/verification needs them. |
-| `--image-path <img>` | image to stamp (**required** for `--mode image`). |
-| `--page <N\|first\|last>` | target page. A number is **1-based**; `first`/`last` (→ `RunConfig.page_anchor`) are resolved **per document** (index 0 / -1) and, with `--template`, accept files whose page count differs from the template (see validation rules). Image: insertion page. beID: vignette page (with `--x/--y`; with `first`/`last` and no position the default bottom-right vignette moves to that page). |
-| `--x <pt> --y <pt>` | lower-left position, points from the page's bottom-left. Image: image corner. beID: vignette corner — **omit both → default bottom-right of last page**. |
-| `--pades-level {b-b,b-t,b-lt,b-lta}` | PAdES baseline level, **default `b-lta`**. b-t+ needs a TSA; b-lt+ embeds OCSP/CRL (LTV) using EU-trusted-list anchors. Never silently downgraded on network failure. |
-| `--timestamp-url` / `--trust-list-url` | RFC 3161 TSA and EU LOTL overrides. Precedence: flag > env (`CACHET_TSA_URL` / `CACHET_LOTL_URL`) > default (DigiCert free TSA / official EU LOTL). Free TSA = technically valid but NOT qualified timestamps. |
-| `--digest {sha256,sha384,sha512}` | digest, pinned as `md_algorithm` (default sha256). |
-| `--no-verify` | skip post-signing self-verification (levels ≥ b-t); also skips the trusted-list fetch at b-t. |
-| `--refresh-trust-list` | bypass the 24 h LOTL cache. |
-| `--pades` | deprecated no-op alias (warns); PAdES is the default now. |
-| `--legacy-cms` | deprecated; old `adbe.pkcs7.detached` path, only combinable with level b-b. |
-| `--lib` / `--field` | eID options (as before): PKCS#11 lib path, field name. |
+- Without `--gui` no window is ever opened.
+- `--input` takes files and/or directories (globbed for `*.pdf`); `--output`
+  writes `{stem}_signe.pdf` and **never overwrites** (` - 1`, ` - 2`, …).
+  If both are absent the legacy positional form `inputs… output_dir` is used.
+- `--page <N|first|last>`: a number is **1-based**; `first`/`last`
+  (→ `RunConfig.page_anchor`) are resolved **per document**. `--x/--y`:
+  lower-left corner in points. In beid/azure they place the vignette —
+  **omit both → default bottom-right box** (on the last page, or on the
+  anchor page with `--page first|last`).
+- `--signatures <file.json>`: JSON **list** of visual signatures, in EVERY
+  mode. UTF-8 (BOM accepted); relative `image_path` / font paths resolve
+  against the JSON file's directory; unknown keys ignored; `"enabled": false`
+  entries skipped.
+- `--text` (+ `--font`, `--color`, `--font-size`, which need it): ONE text
+  signature, **image mode only**; the two characters `\n` become a newline.
+  `--image-path`: ONE image (legacy, 150 pt wide), mutually exclusive with
+  `--text`, silently ignored in beid/azure (as before).
+- `--pades-level {b-b,b-t,b-lt,b-lta}`, default `b-lta`: b-t+ needs a TSA,
+  b-lt+ embeds OCSP/CRL. Never silently downgraded on network failure.
+  `--no-verify` skips the post-signing self-verification (and the
+  trusted-list fetch at b-t).
+- `--timestamp-url` / `--trust-list-url`: flag > env (`CACHET_TSA_URL` /
+  `CACHET_LOTL_URL`) > default (DigiCert free TSA — valid but NOT qualified
+  timestamps — / official EU LOTL).
+- `--azure-*`: each falls back to its `CACHET_AZURE_*` env var. `--azure-auth`
+  `default` is for CI only (it breaks the per-user model); trust anchors
+  (internal CA PEM/DER file or directory) are required when LTV/verification
+  needs them.
+- Deprecated: `--pades` (no-op, warns); `--legacy-cms` (old
+  `adbe.pkcs7.detached`, level b-b and beid only).
 
-Backward compatibility: `--input`/`--output` take precedence; if absent, the
-legacy positional form `inputs… output_dir` is used. `resolve_config()` does
-this resolution and `validate_config()` rejects bad combos (e.g. `image` mode
-without `--image-path`). Both are pure and unit-tested.
+`resolve_config()` / `validate_config()` are pure (they read files, never
+write).
+
+**Who owns `--page/--x/--y`**: in image mode the single *convenience* stamp
+(`--text`, or the legacy `--image-path`); in beid/azure the **vignette**. The
+entries of `--signatures` carry their own placement, so in image mode
+`--page/--x/--y` with `--signatures` alone is an error. `--signatures` is
+additive with at most one convenience stamp, which comes FIRST. The legacy
+image is NOT put in `cfg.stamps`: `image_path/page/x/y/page_anchor` stay
+populated as before and `effective_stamps(cfg)` turns them into the first
+stamp. `--font-size` is tested with `is not None`: an explicit 0 is rejected,
+not replaced by the default.
+
+`main()` reconfigures stdout/stderr with `errors="backslashreplace"`: texts
+and file names are echoed, and redirected output on Windows is the ANSI code
+page — a character outside it must not kill the run before any document.
 
 ## Shared core: `process_batch`
 
-Both the CLI (`main`) and the GUI call `process_batch(cfg: RunConfig, on_progress=…)`:
-1. If `cfg.template` is set, read its per-page dimensions once.
-2. For `beid` mode, open **one** PKCS#11 session, build `BEIDSigner`, read the
-   identity once (no PIN), and build the network material once via
-   `build_signing_material(cfg)` → `SigningMaterial` (an `HTTPTimeStamper`
-   for levels ≥ b-t; trust anchors + a fetching `ValidationContext` for
-   b-lt/b-lta — anchors are passed as `extra_trust_roots` because pyHanko
-   validates the TSA chain against the same context). The trust source is
-   **mode-dependent**: beid → EU LOTL (`trust.py`); azure → internal CA
-   (`load_trust_anchor_certs`). A `TrustListError`/`ValueError` here fails
-   the whole batch — the level is NEVER silently downgraded.
-   For `azure` mode the setup-once path is: `get_cached_credential` →
-   `acquire_user` (ONE login per batch) → `resolve_key_names` →
-   `build_azure_signer` → `read_cert_identity` (vignette name from the cert
-   subject or Graph displayName; `photo=None`).
-3. Per input: validate against the template (if any) → reject+report on failure;
-   else `sign_one()` (beid) or `insert_image_one()` (image). Returns a
-   `DocResult` per file (`ok`, `detail`). `on_progress` fires per document so
-   the GUI can stream rows into its summary table.
-4. beid + levels ≥ b-t (unless `--no-verify`): `verify_signed_pdf()` re-opens
-   the output, validates it (pyHanko validation API + EU anchors) and detects
-   the **achieved** level structurally (timestamp → b-t, DSS revinfo → b-lt,
-   doc-timestamp → b-lta); the result lands in `DocResult.detail`
-   (e.g. `PAdES-B-LTA, LTV ok`); `SelfVerificationError` ⇒ document FAILED.
+Both the CLI and the GUI call `process_batch(cfg, on_progress=…, today=…)`:
+1. Resolved ONCE per batch: the template's page dimensions;
+   `effective_stamps(cfg)`; ONE run date for `{date}` (`today`, injectable);
+   ONE cache of stamp content; `anchor_requirements(cfg)`.
+2. `beid`: **one** PKCS#11 session, `BEIDSigner`, identity read once (no PIN),
+   network material built once by `build_signing_material(cfg)` (an
+   `HTTPTimeStamper` for levels ≥ b-t; trust anchors + a fetching
+   `ValidationContext` for b-lt/b-lta — anchors go in `extra_trust_roots`
+   because pyHanko validates the TSA chain against the same context). Trust
+   source is **mode-dependent**: beid → EU LOTL; azure → internal CA
+   (`load_trust_anchor_certs`). A `TrustListError`/`ValueError` here fails the
+   whole batch — the level is NEVER silently downgraded.
+   `azure`: `get_cached_credential` → `acquire_user` (ONE login) →
+   `resolve_key_names` → `build_azure_signer` → `read_cert_identity`
+   (`photo=None`).
+3. Per input: validate against the template (if any) → reject+report; else
+   `sign_one(…, stamps=, stamp_date=, stamp_cache=)` (beid/azure) or
+   `apply_stamps_one()` (image). One `DocResult` (`ok`, `detail`) per file;
+   `on_progress` fires per document. Any `StampError` (bad page, unreadable
+   image, font, oversized text, already-signed input) fails THAT document
+   (`failed — …`, no output file) and the batch continues.
+4. beid/azure, levels ≥ b-t (unless `--no-verify`): `verify_signed_pdf()`
+   re-opens the output, validates it and detects the **achieved** level
+   structurally (timestamp → b-t, DSS revinfo → b-lt, doc-timestamp → b-lta);
+   `SelfVerificationError` ⇒ document FAILED.
 
 The level → `PdfSignatureMetadata` mapping is the pure
-`signature_meta_kwargs(level, digest, legacy_cms=…, validation_context=…)`
-(unit-tested for all four levels + legacy CMS).
+`signature_meta_kwargs(…)`.
 
-The **same** image/vignette + page + (x, y) is applied to every document —
-validation guarantees the files are geometrically identical, so one placement
-fits all. With `cfg.page_anchor` (`"first"`/`"last"`, exclusive with
-`cfg.page`) the page is resolved **per document** (`anchor_page_index`: 0 /
--1) and validation only pins the anchor page, so page counts may differ.
-Output paths come from `unique_output_path()`: `{stem}_signe.pdf`,
-then `{stem}_signe - 1.pdf`, ` - 2`, … on collision — **existing files are never
-overwritten**.
+**Visual signatures in the core.** The legacy `RunConfig` fields keep their
+meaning — in beid/azure `page/x/y/page_anchor` place the VIGNETTE, in image
+mode (with `image_path`) they describe one legacy image stamp. Exactly two
+writers of stamps, no third one:
+- `sign_one(…, stamps=…)` — beid/azure: `apply_stamps(writer, …)` then
+  `sign_pdf(writer)` on the SAME writer (workaround 4).
+- `apply_stamps_one(src, dst, stamp_list, …) -> bool` — image mode: ONE
+  incremental update, `dst` written only when everything succeeded; an empty
+  list is an error, never a silent no-op; returns True when the input was
+  already signed.
+
+The **same** elements (vignette and/or stamps, each with its own page target
+and (x, y)) are applied to every document — validation guarantees the files
+are geometrically identical, so one placement fits all. A page anchor
+(`cfg.page_anchor` for the vignette, `Stamp.page_anchor` for a stamp;
+exclusive with a page number) is resolved **per document**
+(`anchor_page_index`: 0 / -1), so page counts may differ.
 
 ## Template validation rules
 
 `validate_against_template(template_dims, pdf)` rejects a file unless it has
 **(a)** the same page count and **(b)** EXACTLY identical per-page dimensions —
-exact float equality of `(width, height)` from each page's MediaBox, **no
-tolerance**. Failures are returned as `ValidationResult(ok=False, reason=…)` and
-surfaced (CLI summary / GUI table); they are never silently signed. Dimensions
-come from the MediaBox (inherited through the page tree); rotation is not
-considered.
+exact float equality of each page's MediaBox `(width, height)` (inherited
+through the page tree), **no tolerance**, rotation ignored. Failures come back
+as `ValidationResult(ok=False, reason=…)` and are surfaced, never signed.
 
-With `page_anchor="first"|"last"` (CLI `--page first|last`, GUI validation-step
-selector), a file whose **page count differs** from the template is accepted
-**iff its anchor page exactly matches the template's anchor page** — that is
-the page the signature lands on, so the chosen (x, y) is guaranteed to fit it.
-Files with the template's page count keep the full strict check; a count
-mismatch whose anchor page differs is rejected with both facts in the reason.
-Accepted mismatches carry an informative `reason` ("N page(s), the template
-has M — signed on the last page") even though `ok=True`.
+A file whose **page count differs** is accepted **iff EVERY placed element
+targets a page anchor** (`first`/`last`) **and each of those anchor pages
+exactly matches the template's anchor page** — the pages the elements land
+on, so the chosen positions fit. `anchor_requirements(cfg)` → `(anchors,
+blocker)`: the anchors in use, ordered `("first", "last")`, and None or a
+phrase naming the FIRST element that is not anchored (it ends up in the
+rejection reason). Deliberate: in beid/azure the default bottom-right
+vignette (no `--page first|last`) is NOT auto-anchored (`the vignette has no
+first/last page target`) — a safety check is never relaxed silently.
 
-## Image placement convention
+The GUI's step-3 `_validate` passes the single batch anchor as
+`page_anchor=`; `process_batch` passes `anchors=` + `blocker=`. The GUI must
+therefore hand the batch the SAME anchor for the vignette and every stamp, or
+files shown as accepted at step 3 are rejected at run time. Accepted
+mismatches carry an informative `reason` even though `ok=True`.
 
-`(x, y)` is the **lower-left** corner of the placed image, in PDF points from
-the page's **bottom-left** corner (MediaBox origin is added internally, so it is
-correct even for non-zero-origin MediaBoxes). Page numbers are **1-based** at the
-CLI/GUI boundary and converted to pyHanko's 0-based (`-1` = last) internally.
-The image is scaled to a fixed width `_IMG_TARGET_W_PT` (150 pt) preserving
-aspect, with **no border** — `insert_image_one` sets `border_width=0` on the
-`StaticStampStyle` (whose default is 3 pt black, which would frame the image).
-The GUI and CLI share this convention exactly. An out-of-range `--page` is
-reported as a clear per-document failure ("page N out of range…"), not a raw
-pyHanko error.
+## Stamp placement convention
 
-**beID vignette placement.** In `beid` mode, supplying `--x/--y` (or clicking in
-the GUI) places the vignette on `--page` at that lower-left point, sized to a
-**3:1 landscape box of width = page_w/5** (`vignette_size_pt`). With no position,
-the vignette keeps its default bottom-right corner box
-(`_default_vignette_box(writer, page_index)` — the last page by default, the
-anchor page when `--page first|last` is set).
-`build_stamp_style(identity, box_w, box_h)` makes the photo band proportional to
-the box width (`_PHOTO_BAND_FRAC`, 0.2 → 42 pt for the default 210 pt box,
-unchanged), so the same layout fits both the default box and the smaller placed
-box without overflowing pyHanko's layout margins.
+`(x, y)` is the **lower-left** corner of the placed element, in PDF points
+(floats, never rounded) from the page's **bottom-left** corner — the MediaBox
+origin is added per page inside `apply_stamps` (non-zero origins work). Page
+numbers are **1-based** at the CLI/GUI/JSON boundary, 0-based (`-1` = last)
+inside. A placed stamp has exactly ONE page target: `page`, `page_anchor`
+(per document) or `all_pages`. An out-of-range page is a clear per-document
+failure, not a raw pyHanko error.
 
-Placement math is in pure, tkinter-free functions (`fit_frame`,
-`frame_click_to_pdf_xy`, `pdf_rect_to_frame_rect`) so it is unit-tested and
-reused by the GUI canvas.
+- **Image stamps**: scaled to `width_pt`. `load_image` normalises once (EXIF
+  orientation; any mode other than RGB/RGBA/L/LA → RGBA); the embedded
+  bitmap is capped at `IMAGE_MAX_DPI`.
+- **Text stamps are rasters** (no font embedded, no shaping library): Pillow
+  at `TEXT_DPI` into a **tightly cropped** RGBA image, then the image
+  pipeline. `ImageFont.Layout.BASIC` is pinned so sizes do not depend on
+  raqm. Because of the crop, `(x, y)` is the corner of the INK box, and with
+  `{filename}` / `{date}` the box (and baseline) can vary per document. A
+  character the font lacks is drawn as a box or (Sacramento) not at all —
+  accepted limitation, in README.
+- **Placeholders**: `resolve_text` replaces `{date}` (dd/mm/YYYY, run date)
+  then `{filename}` (source stem) with `str.replace` — never `str.format`.
+- **`apply_stamps` paints the image XObject directly** (`w 0 0 h x y cm /Name
+  Do`), NOT through a pyHanko `StaticStampStyle`: pyHanko's `BoxConstraints`
+  truncates the box to whole points, so the PDF differed from the preview and
+  anything under 1 pt high (a `______` line) raised `ZeroDivisionError`. ONE
+  image per stamp, shared by its pages; a FRESH resource name per page (pages
+  may share one `/Resources`; pyHanko refuses a duplicate name); numbers via
+  `_pdf_number` (`%g` can emit an exponent, invalid in PDF). No border.
+- **Every stamped page is `mark_update`d**: when `/Contents` is an indirect
+  array pyHanko updates the array only, and the `/Resources` it adds to the
+  page would never be written (invisible stamp, reported as success). Such
+  an array is first COPIED onto the page: pyHanko appends in place, and a
+  page sharing it would get the stamp too. A page without `/Contents` first
+  gets an empty stream (pyHanko raises `KeyError`).
+- **No half-stamped writer**: pages and content are resolved for ALL stamps
+  before the first write.
+- **Memory is bounded**: `text_layout` MEASURES (1×1 probe) and refuses a
+  text above `MAX_TEXT_PIXELS` BEFORE any allocation; `validate_stamp` runs
+  the same probe, so no entry point (CLI, JSON, dialog, hand-edited profile)
+  can trigger a huge raster. Freehand drawings: same budget.
+- **Caching**: `stamp_content(stamp, cache=…)` keys on `content_key`; a text
+  with `{filename}` is never cached (unbounded growth over a batch).
+
+JSON schema (`--signatures` and profile entries, `Stamp.to_dict/from_dict`):
+`kind`; text → `text`, `font`, `color`, `font_size`; image → `image_path`,
+`width_pt`; then `page` | `page_anchor` | `all_pages: true`, `x`, `y`;
+optional `enabled`. `from_dict` only type-checks (a `bool` is never a
+number); `validate_stamp(stamp, placed=True)` checks content then placement,
+`placed=False` content only. A relative font PATH is joined to the JSON
+folder, but a bare word that is no file there stays as typed, so a mistyped
+bundled id is reported as an id.
+
+**Vignette placement (beid/azure).** With `--x/--y` (or a click in the GUI)
+it goes on `--page` at that point, sized to a **3:1 box of width page_w/5**
+(`vignette_size_pt`). Without a position it keeps its default bottom-right
+box (`_default_vignette_box`, from the pure `default_vignette_rect` that the
+GUI also draws). `build_stamp_style(identity, box_w, box_h)` makes the photo
+band proportional to the box width (`_PHOTO_BAND_FRAC`), so one layout fits
+both boxes without overflowing pyHanko's layout margins. The canvas ↔ PDF
+math is pure and tkinter-free (`fit_frame`, `frame_click_to_pdf_xy`,
+`pdf_rect_to_frame_rect`).
 
 ## GUI workflow (`gui.py`)
 
-`CachetApp` (a `ctk.CTk`) opens on a **landing page** (overview text, top
-bar, Start bottom-right — no stepper there); Start builds the **wizard**. Both
-screens share the same **top bar** (`_build_top_bar`): the brand on the left
-(`logo.png` + "Cachet" — `_load_logo` caches a `CTkImage`, `_asset_path`
-resolves the file next to `gui.py` or under `sys._MEIPASS` in the frozen
-binary via `gui_datas` in cachet.spec; a missing logo degrades to the name
-alone), and on the right the language selector (`_wizard_lang_menu` in the
-wizard) with the **support link** to its right (`support.button` →
-`_SUPPORT_URL`, the Stripe payment page, opened in the browser). The wizard
-adds a stepper bar, a split body (form on the left inside a `CTkScrollableFrame`,
-per-step contextual help `i18n` text on the right, rendered with
-`_fill_textbox` so `**bold**` markup shows as bold), and a footer whose
-Previous/Next labels **name the target step** (`nav.next`/`nav.previous`).
-Cancel opens a confirm modal; confirming (and Finish on the last step) calls
-`_reset_state()` and returns to the landing page. All texts come from
-`i18n.tr`; the language defaults to `system_language()` and can be switched
-at any step: `_on_wizard_language_change` sets the language, closes the
-(language-bound) docs popup, then rebuilds the chrome and the current step
-in place (`_build_wizard()` + `_goto_step(min(step, _first_incomplete()))`)
-— state lives on the app, so nothing the user entered is lost. The selector
-is disabled while a batch runs.
+`CachetApp` (a `ctk.CTk`) opens on a **landing page**; Start builds the
+**wizard**: top bar, stepper, a split body (form in a `CTkScrollableFrame`,
+per-step help), and a footer whose Previous/Next labels **name the target
+step**. Cancel opens
+`_confirm_modal` (shared with Delete — its button row must stay the window's
+LAST child, a test finds the buttons that way); confirming (and Finish) calls
+`_reset_state()`, which resets the SESSION only and RELOADS the profile — the
+library and the settings are never wiped.
 
-The 8 steps (`_STEP_KEYS` → `_build_step_<key>`): (1) template, (2) files,
-(3) validation — auto-runs on first entry, pass/fail table, plus a localized
-**first/last-page selector** (`anchor_row`, default "last") that appears only
-when some files' page count differs from the template; it maps to
-`RunConfig.page_anchor` for the whole batch and re-validates on change,
-(4) output folder, (5) signature type (beid/azure/image radios + per-input
-hints + **PAdES level selector**, default `b-lta`; azure panel appears only in
-azure mode; the **"Full documentation" popup is localized**: `_show_docs_popup`
-renders `i18n.DOC_SECTIONS` with bold markup, then `i18n.DOC_SOURCES` as
-clickable links — `tag_bind` → `webbrowser.open`), (6) placement — when
-`count_mismatch` is set, a **mirror of the step-3 first/last selector** sits
-at the top (`place_anchor_row`, same shared `anchor_choice`, re-validates on
-change and shows "N/M accepted" via `_update_place_anchor_widgets`), then the
-page preview + click for **all** modes (image mode adds the image picker)
-plus a manual **target-page field** (`page_text`) that follows the preview
-when in range and only warns when beyond the template; while a page anchor
-applies the field and Prev/Next are **disabled**, the preview is **locked**
-onto the template's first/last page (label says "locked") and a position
-clicked on another page is dropped (`_sync_anchor_page`) — `page` and
-`page_anchor` stay mutually exclusive in the built `RunConfig`, (7) signing —
-config summary (names the anchor when active), in beid mode a **green
-"insert your eID card" box** (`card_box`, hidden by `_launch`, shown again by
-`_show_card_box` when the batch fails to start), Start + progress bar,
-(8) results report table + an **"Open output folder"** button
-(`core.open_in_file_manager`: `os.startfile` / `open` / `xdg-open`; failures
-are shown inline, never raised into the Tk loop).
+Language: `launch_gui` applies the saved language, else `system_language()`;
+`CachetApp.__init__` never changes it (tests build apps directly). A switch
+closes the docs popup and any editor dialog (language-bound), then rebuilds
+the chrome and the current step in place.
 
-Step state drives the chrome (`_refresh_chrome`): per-step predicates
-`_step_complete` / `_step_error` color the stepper chips — current = accent,
-passed & clean = light-green border (`_COL_DONE`), problems = light-red
-(`_COL_ERROR`, e.g. rejected files on step 3, missing azure vault/anchors on
-step 5), reachable-pending = gray, beyond the first incomplete step = disabled
-(`_COL_LOCKED`) — a step is never shown green just because its *defaults* are
-valid. Next is enabled only while the current step **and every step before
-it** are complete (`i < _first_incomplete()` — the step-6 selector can
-re-validate step 3 down to zero accepted files); ALL navigation (stepper,
-Prev/Next, Cancel, language selector) locks while `_running`. Editing upstream state
-invalidates downstream results (`validation_results`, `run_results`) so the
-gating recomputes. Step content is **rebuilt on every entry** (state lives on
-the app, widgets are disposable) — update helpers guard widget access with
-`_alive(...)`.
+The 8 steps (`_STEP_KEYS` → `_build_step_<key>`): template, files,
+validation, output folder, signature type, placement (the element editor),
+signing, report. Step 3 auto-validates on first entry; its **first/last-page
+selector** (`anchor_row`, default "last") appears only when some files' page
+count differs from the template: ONE anchor for the whole batch,
+re-validating on change. Step 7's "insert your eID card" box (beid) is hidden
+by `_launch` and shown again by `_show_card_box` when the batch fails to
+start. The step-3 and step-8 tables (`_make_table` / `_fill_table`) keep
+their first columns fixed; the last one (detail) takes the remaining width,
+follows the window and is never narrower than its longest text — a
+horizontal scrollbar shows up only while that does not fit.
 
-Step 6's `tkinter.Canvas` shows the **actual rendered template page** as its
-background (`core.render_page_image`: **pypdfium2** primary, `pdftoppm` fallback;
-cached per page; falls back to a white frame only if both are unavailable).
-Prev/Next change the preview page; a click sets the position AND syncs the
-target-page field, drawing a to-scale placeholder — the image (image mode) or a
-**3:1 box of width page_w/5** (beid/azure). The canvas **resizes with the
-window**: `<Configure>` on the toplevel → `_draw_page` recomputes the canvas
-size from the window (`_canvas_target_size`) and refits the page, preserving
-proportions (cached full-res page image is just rescaled, so no re-render on
-resize). Tables use `rowheight=30` + an explicit font so full text lines show.
+**Step 6 — the element editor.** Elements = the vignette (beid/azure, id
+`VIGNETTE_ID`) + the library `profile.signatures` (ids are 12 hex digits, so
+never `"vignette"`). Top to bottom: a mirror of the step-3 selector when
+`count_mismatch`; the navigation row at FULL width; then the
+`elements_panel` (stacked add buttons, element list, actions) beside the
+preview column (canvas, red `place_warn_lbl`).
+- Selection happens in the LIST only; a canvas click always PLACES the
+  selected element (no hit-testing).
+- Every library/placement mutation ends with `_commit_elements()` (save →
+  invalidate run → refresh); the helpers are `_alive`-guarded, so element
+  operations also work while step 6 is not built.
+- **Placement is never destroyed** by a template or anchor change: an element
+  keeps its position plus `placed_on`, the `(w, h)` of the page it was placed
+  on; whether it is *in force* is a pure predicate (`_sig_placed`,
+  `_vignette_placed` → `profile_store`: exact page-size equality; under an
+  anchor the element must sit on the anchor's template page). Not in force =
+  "not placed", and it comes back when the template/anchor does. Code that
+  re-targets an element (e.g. unticking "On every page") must ask
+  `_sig_placed`, never "has coordinates", or a placement saved for another
+  page size is applied without a click.
+- `_place_error()` (first problem or None): page field invalid or beyond the
+  template (BLOCKING), an enabled signature that cannot be rendered, image
+  mode without any enabled signature, an enabled signature not placed.
+  beid/azure with no enabled signature is complete without a click (default
+  vignette); disabled signatures never block.
+- The page field is parsed with `str.isdecimal()`: `isdigit()` accepts "²"
+  (one key on AZERTY), `int()` rejects it, and the exception would hit every
+  navigation callback. `_sync_page_to_selection()` is the ONLY place deriving
+  `page_text` from an element; `_pick_template` empties the field.
+- **Anchor lock** (page counts differ): the batch anchor forces EVERY element
+  onto each document's first/last page; the preview is locked on that
+  template page and no position is dropped. `_launch` rewrites every enabled
+  stamp to `page_anchor=anchor, page=None, all_pages=False` and passes
+  `page_anchor` for the vignette in beid/azure (None in image mode) — `page`
+  and `page_anchor` stay exclusive. `_launch` never passes `image_path`:
+  `cfg.stamps` = the enabled signatures; the legacy `page/x/y/page_anchor`
+  carry the VIGNETTE only.
+- Layout contract at the default 1180 px window in every language (asserted
+  by a GUI test in `pt` and `nl`): nav row above the editor row, panel no
+  wider than `_ELEMENTS_PANEL_W` + 12 px, canvas inside the visible column.
 
-Tkinter is **not thread-safe**, so the worker thread never touches widgets: it
-pushes `("row"/"done"/"error", payload)` onto a `queue.Queue`, and the main
-thread drains it via a periodic `self.after(100, self._poll_results)` (progress
-bar + status on step 7; "done" auto-advances to the report). Calling
-`self.after(...)` *from* the worker raises `main thread is not in main loop` —
-do not reintroduce that. The worker catches `(Exception, SystemExit)`:
-`open_eid_session()` raises **`SystemExit`** (no reader/card), which is *not* an
-`Exception`, so a bare `except Exception` would let the worker die silently and
-hang the GUI on "Processing…". `_poll_results` also no-ops if the
-window was closed mid-batch. Guarded end-to-end tests (`GuiImageEndToEnd`,
-`GuiWizardChrome`, …, skipped without a display) cover these paths.
+**Editor dialogs** (`_open_dialog`): ONE `self._dialog` at a time, a
+non-blocking `CTkToplevel` with a delayed guarded `grab_set`, never
+`wait_window`; closed on step change, reset and language switch; widgets are
+`dlg_*` attributes, plain values live in `_dialog_state`. The footer (error
+label + Cancel/Save) is packed FIRST from the bottom so it never leaves the
+fixed-size window. Text dialog: live preview through `stamps.stamp_content`;
+the "enter some text" error stays hidden until the user typed or tried to
+save (`_dialog_state["edited"]`); editing KEEPS the placement. Draw dialog:
+the strokes are the model, the canvas only their echo; points are clamped to
+the canvas. An image that cannot be read or copied into the store is NOT
+added — no fallback to the original file. A picker opened from a dialog gets
+`parent=self._dialog`, and its handler re-checks `_alive(self._dialog)`.
+
+Chrome (`_refresh_chrome`): `_step_complete` / `_step_error` colour the
+stepper chips — a step is never green just because its *defaults* are valid.
+Next is enabled only while the current step **and every step before it** are
+complete (the step-6 selector can re-validate step 3 down to zero accepted
+files); ALL navigation locks while `_running`. Editing upstream state
+invalidates downstream results. Step content is **rebuilt on every entry**
+(state lives on the app, widgets are disposable): update helpers guard widget
+access with `_alive(...)`.
+
+The step-6 canvas shows the **rendered template page**
+(`core.render_page_image`: **pypdfium2**, `pdftoppm` fallback, white frame if
+neither) and every element of that page to scale, the selected one LAST.
+`_content(sig)` caches a thumbnail of `stamps.stamp_content` per
+`content_key`; it runs inside `_refresh_chrome` on every navigation, so it
+**never raises** (`except Exception`; the message is cached instead) and
+never renders the same failing content twice. Every `ImageTk.PhotoImage` of a
+draw is kept in the list `_canvas_imgs` (Tk only keeps a name). On resize
+cached images are rescaled, never re-rendered.
+
+**Persistence hooks.** `CachetApp(args, store=None)`; `_save_profile()` never
+raises (an `OSError` is shown as `place.save_failed`), runs on the main
+thread only, and is called on every change. The vault URL is saved only on a
+REAL edit of the entry (a focus-out must not turn the env/default value into
+a saved choice). **`_loading` guard**: `_reset_state` sets the tk
+variables from the loaded profile, which fires their traces — the save
+handlers return at once while `_loading`, or a reset would write defaults
+back over the saved settings. Loading precedence: saved choice >
+`CACHET_AZURE_*` env > built-in default. A saved output folder / anchors file
+is probed with `os.path.isdir/exists`, NEVER `Path.is_dir()/exists()`: pathlib
+raises on EACCES / ENAMETOOLONG / an unreachable share, and the app could no
+longer start.
+
+Tkinter is **not thread-safe**: the worker thread never touches widgets, the
+profile or the GUI caches. It pushes `("row"/"done"/"error", payload)` onto a
+`queue.Queue`, drained on the main thread by a periodic
+`self.after(100, self._poll_results)` ("done" auto-advances to the report).
+Calling `self.after(...)` *from* the worker raises `main thread is not in main
+loop` — do not reintroduce that. The worker catches `(Exception, SystemExit)`:
+`open_eid_session()` raises **`SystemExit`** (no reader/card), which is *not*
+an `Exception`, so a bare `except Exception` would let the worker die silently
+and hang the GUI on "Processing…". `_poll_results` no-ops if the window was
+closed mid-batch.
 
 **CTkEntry + StringVar pitfall**: `CTkEntry.destroy()` (CustomTkinter 5.2.2)
 does NOT remove the trace it adds on its textvariable (radio buttons and
 option menus do). Since step content is rebuilt constantly, entry-backed state
 is kept in **plain strings** (`page_text`, `azure_vault`, `azure_key`) synced
 via key bindings — do not "simplify" these back to shared `StringVar`s, or
-every later `var.set()` fires callbacks on dead widgets (TclError spam).
+every later `var.set()` fires callbacks on dead widgets (TclError spam). Rule
+for new code: **no variable on any `CTkEntry`**, dialogs included (seed with
+`.insert`, read with `.get()`); the step-6 check boxes and the dialog option
+menu are used WITHOUT a variable.
 
-## Three deliberate workarounds (beid mode) — do not "simplify" away
+**Other CustomTkinter 5.2.2 pitfalls** (each covered by a GUI test):
+- Never `CTkLabel.configure(image=None)` (nor `""`): the old picture stays on
+  screen and, once freed, the next `configure` raises `TclError: image
+  "pyimageN" doesn't exist`. "No preview" = the 1×1 transparent image of
+  `_blank_ctk_image()`; every preview image is pinned on its label.
+- An empty `CTkFrame` keeps a 200×200 default size and does not shrink when
+  its last child is destroyed: `elements_list` always keeps one child.
+- `CTkButton` has no `justify` and its `width` is a minimum: list rows are
+  two stacked `CTkLabel`s, and the panel's buttons are stacked.
+- `CTkTextbox` wraps visually by default: the text dialog uses `wrap="none"`
+  (the stamp breaks lines only at real newlines).
+- `CTkCheckBox.select()/.deselect()` never call `command`, and there is no
+  `invoke()` (tests use `toggle()`): handlers flip the MODEL and the list
+  refresh re-syncs the widget, never the other way round.
+- A `CTkScrollableFrame` inside the scrollable content column double-scrolls:
+  `elements_list` is a plain frame.
+
+## Deliberate workarounds and invariants — do not "simplify" away
 
 1. **`open_eid_session()` replaces `pyhanko_beid.open_beid_session()`** — the
    plugin hard-codes a `BELPIC` token label; the same opaque error also appears
@@ -321,13 +460,25 @@ every later `var.set()` fires callbacks on dead widgets (TclError spam).
    token and gives distinct "no reader" / "no card" / "other label" messages.
 2. **`IncrementalPdfFileWriter(inf, strict=False)`** — inputs use *hybrid*
    xref sections; strict mode refuses them (`hybrid cross-reference sections
-   while hybrid xrefs are disabled`). `strict=False` is the intended escape
-   hatch. Image insertion uses the same `strict=False` writer.
-3. **Vignette via `signers.PdfSigner(stamp_style=…, new_field_spec=…)`** — field
-   box defaults to a bottom-right corner box on the target page
-   (`_default_vignette_box`, `on_page=-1` unless a page anchor moves it), or,
-   when `sign_one(..., pos=(x, y))` is given, a 3:1 box of width page_w/5 on the
-   chosen page; background image and text positioned independently.
+   while hybrid xrefs are disabled`). Same writer for the visual-only path.
+3. **Vignette via `signers.PdfSigner(stamp_style=…, new_field_spec=…)`** — the
+   field box is the default bottom-right box (`on_page=-1` unless a page
+   anchor moves it) or, with `sign_one(..., pos=(x, y))`, the placed 3:1 box;
+   background image and text are positioned independently.
+4. **Visual stamps go into the SAME writer BEFORE `sign_pdf`, never after** —
+   a stamp added to a signed output is an incremental update that validators
+   flag as a modification (`verify_signed_pdf` raises). For the same reason,
+   in beid/azure, stamps are never applied to an INPUT that is already
+   signed: `sign_one` checks `existing_signature_count(writer)` (FILLED
+   signature fields + document timestamps — an empty field prepared for
+   signing does not count) right after opening the writer and raises
+   `StampError` before any PIN prompt; self-verification only validates the
+   LAST signature and would not notice the broken earlier one. Without stamps
+   the guard is not evaluated (plain countersignature; use another `--field`,
+   pyHanko refuses a filled one). Image mode keeps its historical outcome (it
+   stamps, invalidating the old signature) but appends a WARNING to the
+   detail; there a malformed `/AcroForm` counts as "not signed", while
+   `sign_one` fails closed. Do not add a code path that stamps `dst`.
 
 ## Where the signer's identity comes from (beid mode)
 
@@ -339,114 +490,180 @@ national register number is embedded in every signature — mind PDF distributio
 
 ## Runtime requirements
 
-- **beid mode**: eID middleware (`libbeidpkcs11.so`), reader + inserted card,
-  `pcscd` running. Prompts for the **PIN once per document**, so a full eID run
-  needs hardware + a human and cannot be exercised headlessly. Levels ≥ b-t
-  (default b-lta) additionally need **network**: TSA, EU trusted list
-  (cached 24 h) and OCSP/CRL endpoints; `--pades-level b-b` is offline.
-- **azure mode**: no hardware; outbound network to `login.microsoftonline.com`,
-  the vault URL, the TSA (≥ b-t) and the internal CA's CRL/OCSP (≥ b-lt);
-  per-user Key Vault key/cert provisioned by an Azure admin (README). Tokens
-  and key material are never logged; only the digest leaves the machine.
-- **image mode**: nothing special — pure PDF stamping, fully testable headless.
-- **GUI**: `customtkinter` (pip) **and** a Python with `tkinter` + a display.
-  The step-6 page preview is rendered by **pypdfium2** (bundled PDFium, no
-  external binary); `pdftoppm` (poppler-utils) is only an optional fallback if
-  already present. Without either, the canvas falls back to a blank white frame.
+- **beid**: eID middleware (`libbeidpkcs11.so`), reader + inserted card,
+  `pcscd` running. The **PIN is requested once per document**, so a full eID
+  run needs hardware + a human and cannot be exercised headlessly. Levels
+  ≥ b-t need **network** (TSA, EU trusted list, OCSP/CRL); `b-b` is offline.
+- **azure**: no hardware; network to `login.microsoftonline.com`, the vault,
+  the TSA (≥ b-t) and the internal CA's CRL/OCSP (≥ b-lt).
+- **visual signatures**: no network; text needs Pillow's FreeType renderer
+  (`PIL._imagingft`) and the bundled `fonts/`.
 
 ### tkinter in this environment
 
-The system Python (3.12 here) lacks the `_tkinter` C extension, so `tkinter`
-(and thus `customtkinter`) cannot import out of the box. The clean fix is
-`sudo apt install python3-tk`. In this checkout the venv has been
-**provisioned** without root: `tkinter/` + `_tkinter*.so` extracted from the
-`python3-tk` .deb into `venv/lib/python3.12/site-packages/`, plus
-`libBLT.2.5.so.8.6` (from the `tk8.6-blt2.5` .deb — Ubuntu's `_tkinter` links
-against it) preloaded by `_blt_preload.pth` (a `sitecustomize.py` would be
-shadowed by Ubuntu's own). Recreating the venv requires redoing that (or the
-apt install).
+The system Python (3.12 here) lacks `_tkinter` (clean fix: `sudo apt install
+python3-tk`). The venv was **provisioned** without root: `tkinter/` +
+`_tkinter*.so` extracted from the `python3-tk` .deb into
+`venv/lib/python3.12/site-packages/`, plus `libBLT.2.5.so.8.6` (from the
+`tk8.6-blt2.5` .deb — Ubuntu's `_tkinter` links against it) preloaded by
+`_blt_preload.pth` (a `sitecustomize.py` would be shadowed by Ubuntu's own).
+Recreating the venv requires redoing that.
+Packaging side effect: PyInstaller cannot see that `.pth` preload, so a GUI
+binary built from THIS venv lacks libBLT — launch it with
+`LD_LIBRARY_PATH=venv/lib/python3.12/site-packages` to check it here.
 
 ## Validating changes without hardware
 
-- **image mode & validation**: fully end-to-end via the CLI or `process_batch`
-  (no card). The `unittest` suite builds synthetic PDFs (`make_pdf`) to assert
-  page-count / dimension validation, image insertion, placement math, and arg
-  resolution.
+- **Never touch the real user profile.** The GUI loads and AUTO-SAVES one.
+  Non-GUI tests pass explicit temp dirs to `ProfileStore(config_dir=…,
+  data_dir=…)`; GUI tests get `CACHET_CONFIG_DIR` / `CACHET_DATA_DIR` from
+  `_GuiTestBase.setUp`, with a `setUpModule` sandbox underneath. The same
+  holds for anything that is NOT a unittest (screenshot script, manual
+  `--gui`, ad-hoc `gui.CachetApp(args)`): export both variables to scratch
+  directories first, or pass `store=`.
+- **Visual signatures & validation**: fully end-to-end via the CLI or
+  `process_batch`. Fixtures: `make_pdf` (optional MediaBox `origin`),
+  `write_pdf_objects` for unusual page shapes, `make_png`. Do not assert
+  pixel-exact text sizes (hinting differs between FreeType builds): use
+  ratios, bounding boxes, colours, or the paint matrix.
 - **PAdES levels & self-verification**: `SelfVerification` signs real PDFs
   *offline* with `SimpleSigner` + pyHanko's `DummyTimeStamper` (RSA-only) and
   a pre-loaded CRL, then asserts `verify_signed_pdf()` detects B-T/B-LT/B-LTA
-  and fails on mismatch. Do NOT fake the eID hardware path into passing —
-  real-card B-LTA stays the manual acceptance test in BUILD.md.
-- **trust.py**: `test_trust.py` covers LOTL parsing, cert filtering, cache,
-  TTL, refresh and offline errors with the network mocked (`fetcher=`); a
-  live run against the real LOTL takes ~1 s if you need to sanity-check.
-- **azure mode**: `test_azure.py` mocks ONLY the Azure transport — the fake
+  and fails on mismatch. It is also the recipe for **stamps + signature**
+  (real `core.sign_one(…, stamps=[…])`, then coverage `ENTIRE_FILE` and
+  modification level `NONE`) and holds the negative control (a stamp after
+  the signature fails verification).
+- **azure**: `test_azure.py` mocks ONLY the Azure transport — the fake
   `CryptographyClient` really signs the digest with a local key, so RSA/EC
-  signatures flow through pyHanko + `verify_signed_pdf` end-to-end (incl.
-  the r||s→DER conversion). Auth/claims/key-template/material/batch wiring
-  are unit-tested with stub credentials; NO test performs a real login —
-  the real Entra+Key Vault path is the manual acceptance test in BUILD.md.
-  Do not fake it into passing.
-- **GUI**: instantiate `gui.CachetApp(args)`, call `app._start_wizard()`,
-  inject state directly (`template_path`/`template_dims`/`input_paths`/
-  `output_dir`…), walk with `app._goto_step(i)`, call `app.update()`, and
-  screenshot the window by id with ImageMagick
-  (`import -window <hex winfo_id> shot.png`) on `DISPLAY=:0` — this catches real
-  CustomTkinter API errors that `py_compile` cannot. If a GUI test run stalls
-  at window creation with ~0 % CPU, it is Tk waiting on the ibus X input-method
-  bridge (`XCreateIC`/`_XimRead`), not the app: run with
-  `XMODIFIERS=@im=none` (and `PYTHONFAULTHANDLER=1 timeout -s ABRT …` to get a
-  stack if it ever recurs). Never run several GUI suites concurrently on the
-  same display. Step 3 auto-validates on
-  entry; step 6 builds `app.canvas`; a finished batch auto-advances to step 8.
-- **i18n**: `test_i18n.py` (headless) checks catalog completeness,
-  placeholder parity, balanced / equal-count `**bold**` markup, and that the
-  docs catalog (`i18n_docs.py`) is merged and genuinely translated in all six
-  languages.
-- **vignette appearance** (beid): render `build_stamp_style(identity)` via
-  `pyhanko.stamp.TextStamp.apply()` onto a copy with an explicit
+  signatures flow through pyHanko + `verify_signed_pdf` end-to-end.
+- **Do NOT fake the hardware / login paths into passing**: real-card B-LTA
+  and the real Entra + Key Vault run stay the manual acceptance tests of
+  BUILD.md.
+- **GUI**: (profile env vars set) `gui.CachetApp(args)`,
+  `app._start_wizard()`, inject state directly (`template_path` /
+  `template_dims` / `input_paths` / `output_dir`…; signatures through
+  `app._add_signature(stamp, label)`), walk with `app._goto_step(i)`,
+  `app.update()`, and screenshot the window by id with ImageMagick
+  (`import -window <hex winfo_id> shot.png`) on `DISPLAY=:0` — this catches
+  CustomTkinter API errors that `py_compile` cannot. A finished batch
+  auto-advances to step 8. Dialogs are driven through their handlers (fill
+  the `dlg_*` widgets, `_on_text_dialog_edit()`, `_apply_*_dialog()`), with
+  `gui.filedialog.*` and `gui.colorchooser.askcolor` patched.
+- **A GUI run stalling at window creation with ~0 % CPU** is Tk waiting on
+  the ibus X input-method bridge, not the app: run with
+  `XMODIFIERS=@im=none`. Never run several GUI suites concurrently on one
+  display.
+- **`CACHET_REQUIRE_GUI=1`**: the display guard of the GUI tests turns ANY
+  failure of `tkinter.Tk()` or `import gui` (no display, broken Tk, an
+  ImportError in `gui.py`) into a skip — a green `-k Gui` run with skips
+  proves nothing. With this variable the guard FAILS instead; every run
+  meant to exercise the GUI sets it and must report zero skips.
+- **GUI tests and the cyclic GC**: `_GuiTestBase.setUp` calls `gc.disable()`.
+  The tests pump `update()` instead of a mainloop; when the collector runs in
+  the batch WORKER thread, each garbage `CTkFont.__del__` is a Tk call from a
+  non-main thread that waits one second for a mainloop that never comes, and
+  the batch outlives the test's wait loop. New worker-thread GUI tests must
+  inherit `_GuiTestBase`.
+- **Vignette appearance** (beid): render `build_stamp_style(identity)` via
+  `pyhanko.stamp.TextStamp.apply()` with an explicit
   `BoxConstraints(width=_STAMP_W, height=_STAMP_H)`, then rasterize with
   `pdftoppm`. `read_card_identity()` needs the card inserted but no PIN.
 
 ## Packaging (standalone executables)
 
-PyInstaller builds **two onefile binaries** from one shared spec
-(`cachet.spec`), full details in **`BUILD.md`**:
+PyInstaller builds **two onefile binaries** from one spec (`cachet.spec`),
+details in **`BUILD.md`**:
 
-- **`cachet`** — windowed (`console=False`), entry `gui_main.py` (parses the
-  core arg parser then calls `gui.launch_gui`); double-click → GUI.
-- **`cachet-cli`** — console (`console=True`), entry `sign_pdfs_beid.py`;
-  headless, **excludes** tkinter/customtkinter to stay lean.
+- **`cachet`** — windowed (`console=False`), entry `gui_main.py`.
+- **`cachet-cli`** — console, entry `sign_pdfs_beid.py`; headless,
+  **excludes** tkinter/customtkinter (and pypdfium2) to stay lean.
 
-`i18n.py` is a plain module imported by `gui.py`, so PyInstaller's import
-analysis bundles it into the GUI binary by itself — no spec change needed;
-the CLI neither imports nor needs it.
+**Fonts are data of BOTH binaries** (as `stamps.py` is code of both):
+`common_datas` carries `fonts/*.ttf` and `fonts/licenses/*` (the OFL requires
+the licence texts to travel with the fonts) — never move them to
+`gui_datas`, the CLI stamps text too.
+`stamps.asset_path` resolves them next to the module or under
+`sys._MEIPASS`. `common_hidden` must keep `PIL._imagingft` (Pillow's FreeType
+renderer); `gui_hidden` adds `profile_store` and `tkinter.colorchooser`.
 
 Key spec facts (don't regress): no built-in PyInstaller hooks exist for
 `pyhanko`/`pyhanko_beid`/`pyhanko_certvalidator`/`asn1crypto`/`oscrypto`/`pkcs11`
 → they are `collect_all`'d; `pkcs11._pkcs11` native ext + `collect_dynamic_libs`;
 `copy_metadata` for the pyhanko family (defensive). `oscrypto` **must not be
-excluded** (hard import in certvalidator) but its OpenSSL backend is never on
-this app's signing path. `tzdata` is collected **only on Windows** (pyHanko
-timestamps need a zoneinfo there). `upx=False` (UPX can corrupt crypto libs).
-The eID middleware (`libbeidpkcs11.so`/`beidpkcs11.dll`) is a **runtime dep,
-never bundled**. The page preview uses **pypdfium2** (bundled in the GUI binary
-via the contrib hooks; excluded from the CLI binary), so poppler is no longer
-required — only an optional fallback. The Azure SDK
-(`azure.core`/`azure.identity`/`azure.keyvault.*`/`msal`/`msal_extensions`)
-has no provided hooks either → `collect_all`'d + metadata into the **common**
-collection, and `azure_signer`/`jwt` are explicit hiddenimports — azure mode
-must stay available in the **CLI** binary (do NOT add azure to CLI_EXCLUDES).
+excluded** (hard import in certvalidator). `tzdata` is collected **only on
+Windows** (pyHanko timestamps need a zoneinfo there). `upx=False` (UPX can
+corrupt crypto libs). The eID middleware is a **runtime dep, never bundled**.
+The Azure SDK (`azure.*`, `msal`, `msal_extensions`) has no hooks either →
+`collect_all`'d + metadata into the **common** collection, with
+`azure_signer`/`jwt` as explicit hiddenimports — azure mode must stay
+available in the **CLI** binary (do NOT add azure to CLI_EXCLUDES).
 
-Build routes: `./build_linux.sh` (native), `build_windows.bat` (real Windows),
-`./build_windows_wine.sh` (Linux→Windows via Wine, best-effort), and
-`.github/workflows/build.yml` (CI matrix, windows+linux, artifacts — runs on
-`develop` pushes and PRs). **Releases**: merging `develop` into `main` runs
-`.github/workflows/release.yml`, which tags `v{__version__}` (read from
-`sign_pdfs_beid.py` — bump it on develop, it is the single source of truth)
-and publishes a GitHub Release with both packaged binaries; an existing tag
-makes the workflow skip gracefully. See BUILD.md "Release process". Verify
-headlessly: CLI `--help`, image-mode end-to-end, a PKCS#11 native-load canary
-(`--lib` at a dummy `.so` → expect a PKCS#11 error, not `ImportError`), and the
-GUI binary launched on `DISPLAY=:0` + screenshot. Real eID signing needs
-hardware and a real-Windows acceptance test.
+Build routes: `./build_linux.sh`, `build_windows.bat`,
+`./build_windows_wine.sh` (best-effort), and `.github/workflows/build.yml`
+(on `develop` pushes and PRs). **Releases**: merging
+`develop` into `main` runs `release.yml`, which tags `v{__version__}` (read
+from `sign_pdfs_beid.py` — the single source of truth, bump it on develop)
+and publishes both binaries; an existing tag makes it skip. Verify a build
+headlessly: CLI `--help`; `--text` / `--signatures` end-to-end (fonts and
+`PIL._imagingft` in the frozen CLI); a PKCS#11 native-load canary (`--lib` at
+a dummy `.so` → a PKCS#11 error, not `ImportError`); the GUI binary on
+`DISPLAY=:0` + screenshot (profile env vars set).
+
+**CI** — four pipeline files run the tests in the same three Linux steps: the
+headless suite; a **GUI canary** (`import tkinter, customtkinter, gui` + a
+`Tk()` under Xvfb — a broken Tk or `gui.py` must fail, not skip); the `Gui*`
+suites under Xvfb with `CACHET_REQUIRE_GUI=1` and `XMODIFIERS=@im=none` (the
+end-to-end layer: a Tk desktop app has no browser to drive). Every test job
+has a timeout — a stalled Tk call must not hold a runner or the release
+concurrency group — and the GUI step runs under `timeout -s ABRT 900` with
+`PYTHONFAULTHANDLER=1`, so a stall dumps its stacks.
+GitHub Actions (`build.yml`, `release.yml`) run them on Linux only (on the
+Windows runner Tk could open real windows and hang), then build on Windows +
+Linux and smoke-test the frozen CLI. GitLab CI (`.gitlab-ci.yml`) and Forgejo
+Actions (`.forgejo/workflows/tests.yml`) run the tests only, in
+`python:3.13-bookworm` + `xvfb xauth fonts-dejavu-core`; on Forgejo the
+runner label and `actions/checkout@v4` depend on the instance.
+
+## Persistence (user profile) — `profile_store.py`
+
+GUI only; tkinter-free; the core/CLI never imports it.
+
+- **Where**: `profile.json` in the config dir, the image store `signatures/`
+  in the data dir — each: explicit argument > `CACHET_CONFIG_DIR` /
+  `CACHET_DATA_DIR` > `platformdirs` (ONE folder for both on Windows/macOS).
+  `ProfileStore()` resolves both ONCE at construction and creates nothing.
+- **What**: `settings` — only keys with a value are written (`None` = "never
+  set by the user", so env/defaults keep applying); `signatures` — per entry
+  `Stamp.to_dict(base_dir=signatures_dir)` + `id`, `label`, `enabled`,
+  `placed_on`. A stored image is written as its bare file name, any other as
+  an absolute path. "Unplaced" = no `x`/`y` (it may still remember
+  `all_pages: true`).
+- **NEVER stored**: PIN, tokens, any credential, the azure key name, the
+  signed-in UPN, the template, the input files. Everything is UNENCRYPTED
+  (files created 0600 on POSIX); the GUI help and README say so.
+- **Atomic writes** (temp file in the same directory + `os.replace`); `save`
+  raises only `OSError`.
+- **Tolerant `load()` — never raises**: missing file → defaults; a UTF-8 BOM
+  is accepted; not UTF-8 / invalid JSON / deep nesting / wrong top level /
+  `version` missing or ≠ 1 → moved aside as `profile.json.bak` → defaults. A
+  malformed entry is skipped, the others kept; an entry whose image or font
+  FILE is missing is KEPT (shown as unusable, deletable) — recognised by the
+  `StampError` prefixes in `_MISSING_FILE_PREFIXES`, keep them in sync with
+  `stamps.py`; an incomplete placement is cleared; bad / duplicate ids are
+  regenerated.
+- **A degraded load must not lead to a destructive save**: when the file
+  could not be read (`OSError`) or not be moved aside, it stays in place and
+  `save()` REFUSES (`OSError`) until a later `load()` succeeds — the GUI
+  saves on every click and would replace a good profile with an empty one.
+- **Image store**: imported images and drawings are COPIED to
+  `signatures/<32 hex of sha256><ext>` (content-addressed: same bytes → one
+  file; a moved original does not break a signature). User FONTS given by
+  path are not copied.
+- **Deleting**: `remove_signature` is the ONLY code that unlinks anything,
+  and only a file for which `is_store_file(path)` holds (not a symlink,
+  RESOLVED parent = the resolved `signatures/` dir, content-addressed name)
+  and that no remaining signature references. Never use a lexical
+  `is_relative_to` / `relative_to` test for "inside the store"
+  (`dir/../../x` would pass). Deliberately **no sweep of unreferenced
+  files**: the data dir may serve another profile and a `.bak` still
+  references its images.
