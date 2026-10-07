@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import datetime
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -19,7 +20,26 @@ from unittest import mock
 
 import azure_signer
 import sign_pdfs_beid as core
-from test_sign_pdfs_beid import make_pdf
+from stamps import Stamp
+from test_sign_pdfs_beid import make_pdf, xobject_counts
+
+_PROFILE_SANDBOX = None
+
+
+def setUpModule():
+    """Safety net: no test of this module can reach the real user profile
+    (GuiAzurePanel's per-test directories sit on top of this)."""
+    global _PROFILE_SANDBOX
+    root = tempfile.mkdtemp(prefix="cachet-tests-")
+    _PROFILE_SANDBOX = mock.patch.dict(os.environ, {
+        "CACHET_CONFIG_DIR": os.path.join(root, "cfg"),
+        "CACHET_DATA_DIR": os.path.join(root, "data")})
+    _PROFILE_SANDBOX.start()
+
+
+def tearDownModule():
+    _PROFILE_SANDBOX.stop()
+
 
 # ---------------------------------------------------------------------------
 # Local key/cert helpers (cryptography) — no Azure, no network
@@ -361,6 +381,43 @@ class AzureSignerEndToEnd(TmpCase):
                                         trust_anchors=[signer.signing_cert])
         self.assertEqual(detail, "PAdES-B-B")
 
+    def test_stamps_then_azure_signature_validates(self):
+        # Visual signature + azure signature through the REAL core.sign_one:
+        # the stamp goes into the same writer before the signature, so the
+        # signature covers it — and still only the digest goes to Key Vault.
+        from pyhanko.pdf_utils.reader import PdfFileReader
+        from pyhanko.sign.validation import validate_pdf_signature
+        from pyhanko.sign.validation.status import (
+            ModificationLevel, SignatureCoverageLevel)
+        from pyhanko_certvalidator import ValidationContext
+
+        for ec_key, alg in ((False, "RS256"), (True, "ES256")):
+            with self.subTest(alg=alg):
+                signer, fake = self._build(ec_key=ec_key)
+                src = make_pdf(self.p(f"doc_{alg}.pdf"), [(595, 842)] * 2)
+                dst = self.p(f"signed_{alg}.pdf")
+                core.sign_one(
+                    signer, src, dst, "Signature1", "b-b",
+                    core.read_cert_identity(signer.signing_cert),
+                    stamps=[Stamp(kind="text", text="Jane Doe\n{date}",
+                                  all_pages=True, x=360.0, y=120.0)])
+                (call_alg, digest), = fake.calls
+                self.assertEqual(call_alg, alg)
+                self.assertEqual(len(digest), 32)
+                self.assertEqual(
+                    core.verify_signed_pdf(dst, "b-b",
+                                           trust_anchors=[signer.signing_cert]),
+                    "PAdES-B-B")
+                with dst.open("rb") as f:
+                    reader = PdfFileReader(f, strict=False)
+                    status = validate_pdf_signature(
+                        reader.embedded_regular_signatures[0],
+                        ValidationContext(trust_roots=[signer.signing_cert]))
+                self.assertTrue(status.bottom_line, status.summary())
+                self.assertEqual(status.coverage, SignatureCoverageLevel.ENTIRE_FILE)
+                self.assertEqual(status.modification_level, ModificationLevel.NONE)
+                self.assertEqual(xobject_counts(dst), [1, 1])    # stamped on both pages
+
     def test_vault_error_is_actionable(self):
         key_client = SimpleNamespace(
             get_key=mock.Mock(side_effect=OSError("connection refused")))
@@ -520,6 +577,28 @@ class BatchAzureWiring(TmpCase):
         self.assertEqual(kw.get("pos"), (10.0, 20.0))
         self.assertIn("page 2", results[0].detail)
 
+    def test_stamps_forwarded_to_sign_one(self):
+        srcs = [make_pdf(self.p(f"d{i}.pdf"), [(595, 842)]) for i in range(2)]
+        extra = [Stamp(kind="text", text="Jane Doe", page_anchor="last", x=10.0, y=20.0),
+                 Stamp(kind="text", text="JD", all_pages=True, x=540.0, y=20.0)]
+        cfg = core.RunConfig(inputs=srcs, output=self.p("out"), mode="azure",
+                             azure_vault_url="https://v.example", stamps=extra)
+        calls, results = self._run(cfg)
+        self.assertTrue(all(r.ok for r in results))
+        self.assertEqual(len(calls["sign"]), 2)
+        for _, kw in calls["sign"]:
+            self.assertEqual(kw["stamps"], extra)
+            self.assertIsInstance(kw["stamp_date"], datetime.date)
+            self.assertIsNone(kw.get("pos"))             # the vignette keeps its default
+        # ONE cache for the whole batch
+        self.assertIsInstance(calls["sign"][0][1]["stamp_cache"], dict)
+        self.assertIs(calls["sign"][0][1]["stamp_cache"],
+                      calls["sign"][1][1]["stamp_cache"])
+        self.assertEqual(
+            results[0].detail,
+            "signed (Azure, jane@example.org) — vignette + 2 visual signature(s) "
+            "— PAdES-B-LTA, LTV ok")
+
 
 class AzureSigningMaterial(TmpCase):
     """build_signing_material: azure uses the INTERNAL CA, never the LOTL."""
@@ -568,7 +647,19 @@ class GuiAzurePanel(unittest.TestCase):
             tkinter.Tk().destroy()
             import gui  # noqa: F401
         except Exception as exc:  # noqa: BLE001
+            # A run that is SUPPOSED to exercise the GUI must not turn a
+            # broken gui.py or a missing display into a green "all skipped".
+            if os.environ.get("CACHET_REQUIRE_GUI") == "1":
+                self.fail("GUI tests are required (CACHET_REQUIRE_GUI=1) but "
+                          f"unavailable: {exc!r}")
             self.skipTest(f"tkinter/GUI unavailable: {exc}")
+        # The GUI loads and auto-saves a user profile: never the real one.
+        self.tmp = Path(tempfile.mkdtemp())
+        env = mock.patch.dict(os.environ, {
+            "CACHET_CONFIG_DIR": str(self.tmp / "cfg"),
+            "CACHET_DATA_DIR": str(self.tmp / "data")})
+        env.start()
+        self.addCleanup(env.stop)
 
     def _wizard_to_mode_step(self, app):
         """Complete steps 1-4 with minimal state and enter the mode step."""
@@ -604,10 +695,11 @@ class GuiAzurePanel(unittest.TestCase):
             app._refresh_azure_visibility()
             app.update()
             self.assertFalse(app.azure_section.winfo_manager())  # hidden again
-            # the image picker lives on the placement step, image mode only
+            # placement step, image mode: the add buttons, and no vignette
             app._goto_step(5)
             app.update()
-            self.assertTrue(app.image_row.winfo_manager())
+            self.assertTrue(app.add_image_btn.winfo_manager())
+            self.assertNotIn(gui.VIGNETTE_ID, app._element_rows)
         finally:
             app.destroy()
 
