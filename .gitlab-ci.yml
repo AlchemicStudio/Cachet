@@ -1,0 +1,32 @@
+# GitLab CI: runs the test suites only. The standalone executables and the
+# releases are built on GitHub Actions (.github/workflows/build.yml and
+# release.yml); .forgejo/workflows/tests.yml is the Forgejo twin of this file.
+#
+# Three steps, as on GitHub: the headless suite, a GUI canary, then the
+# guarded Gui* suites under Xvfb (the end-to-end layer of this Tk app).
+stages: [test]
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  XMODIFIERS: "@im=none"          # Tk must not wait on the ibus XIM bridge
+
+tests:
+  stage: test
+  timeout: 30m                     # a stalled Tk suite must not hold the runner
+  image: python:3.13-bookworm      # full image: tkinter + libtk included
+  cache:
+    key: pip-py313
+    paths: [.cache/pip]
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends xvfb xauth fonts-dejavu-core
+    - pip install -r requirements.txt
+  script:
+    # 1. headless: the Gui* suites skip themselves
+    - env -u DISPLAY python -m unittest -v
+    # 2. canary: a broken Tk OR a broken gui module must FAIL the job instead of silently skipping
+    - xvfb-run -a -s "-screen 0 1920x1200x24" python -c "import tkinter, customtkinter, gui; tkinter.Tk().destroy()"
+    # 3. guarded GUI suites (the e2e layer), one run, sequential; a skipped GUI test is a failure
+    #    (timeout -s ABRT + faulthandler: a stalled suite dumps its stacks)
+    - CACHET_REQUIRE_GUI=1 PYTHONFAULTHANDLER=1 xvfb-run -a -s "-screen 0 1920x1200x24" timeout -s ABRT 900 python -m unittest -v -k Gui
