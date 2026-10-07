@@ -54,17 +54,39 @@ This is the recommended route for a production deliverable: it produces a native
 ## 3. Windows — via GitHub Actions (CI, reproducible)
 
 The `.github/workflows/build.yml` workflow compiles **Windows + Linux** on the
-GitHub runners on every `push`/tag, runs a smoke test (image mode, no card) and
-publishes the binaries as artifacts.
+GitHub runners (pushes to `develop`, pull requests, manual runs) and publishes
+the binaries as artifacts. Before building, the Linux job runs the tests in
+three steps:
+
+1. the **headless suite** (`env -u DISPLAY python -m unittest -v`; the `Gui*`
+   classes skip themselves);
+2. a **GUI canary** under Xvfb — `import tkinter, customtkinter, gui` and a
+   `Tk()` window — so a broken Tk or a `gui.py` that no longer imports fails
+   the job instead of making every GUI test skip;
+3. the **`Gui*` suites** under Xvfb with `CACHET_REQUIRE_GUI=1`, which turns
+   any remaining skip into a failure (they are the end-to-end layer of this
+   desktop app).
+
+After the build, a **smoke test** runs the frozen CLI without a card, on both
+OSes: the legacy single image (`--image-path`), a text signature (`--text`)
+and a `--signatures` file. The last two prove that the bundled fonts and
+Pillow's FreeType renderer are in the CLI binary.
 
 ```bash
-# once: push the repository to GitHub
+# once: push the repository to GitHub (build.yml runs on `develop`; a push to
+# `main` runs the release workflow instead — see "Release process" below)
 git remote add origin git@github.com:<you>/<repo>.git
-git push -u origin main
+git push -u origin develop
 ```
 
 Then: **Actions** tab → run → **Artifacts** → `cachet-windows-latest` /
 `cachet-ubuntu-latest`. Can also be triggered manually (*workflow_dispatch*).
+
+**GitLab CI** (`.gitlab-ci.yml`) and **Forgejo Actions**
+(`.forgejo/workflows/tests.yml`) run the same three test steps in a
+`python:3.13-bookworm` container. They run the tests only: builds and releases
+stay on GitHub. On Forgejo, adapt `runs-on: docker` to your instance's runner
+label.
 
 ## Release process (develop → main)
 
@@ -76,8 +98,10 @@ publishes a release** (`.github/workflows/release.yml`):
    truth — the CLI `--version` and the GUI title read it).
 2. Open a PR `develop` → `main` and merge it.
 3. The release workflow then: reads the version → checks the tag `v{version}`
-   does not already exist → runs the unit tests → builds **both** executables
-   on Windows AND Linux → smoke-tests the frozen CLI → packages
+   does not already exist → runs the tests (Linux: headless suite, GUI canary,
+   `Gui*` suites under Xvfb with `CACHET_REQUIRE_GUI=1`) → builds **both**
+   executables on Windows AND Linux → smoke-tests the frozen CLI (legacy
+   image, `--text`, `--signatures`) → packages
    `cachet-{v}-linux-x86_64.tar.gz` + `cachet-{v}-windows-x86_64.zip` →
    creates the tag and a **GitHub Release** with auto-generated notes and the
    two archives attached.
@@ -133,7 +157,7 @@ These components are loaded dynamically and **cannot** be packaged:
   and the CAs' **OCSP/CRL** endpoints. `azure` mode additionally needs
   **`login.microsoftonline.com`** (Entra ID) and the **Key Vault URL**.
   Offline machines can only sign at `--pades-level b-b` in beid mode (or
-  stamp images); on failure the app names the unreachable endpoint and
+  stamp visual signatures); on failure the app names the unreachable endpoint and
   **never silently downgrades the level**.
 - **Azure per-user provisioning** (azure mode only) — each user needs a Key
   Vault key + certificate (internal CA) named after the key template
@@ -144,8 +168,27 @@ The GUI's **page preview** (step 6) is rendered by **pypdfium2** (PDFium engine
 `poppler` (`pdftoppm`) is now only an **optional fallback** used only if it is
 already present on the machine (see `core.render_page_image`).
 
-The **image mode** depends on none of these components: it is fully functional
-and testable without hardware.
+**Bundled fonts** — the six OFL fonts of the text signatures (`fonts/*.ttf`)
+and their licence texts (`fonts/licenses/`, which the OFL requires to travel
+with the fonts) are bundled in **both** binaries (`common_datas` in
+`cachet.spec`): the CLI stamps text too. `stamps.asset_path` finds them next
+to the module in a checkout and under `sys._MEIPASS` in a frozen binary. A
+font the user designates by path (`.ttf`/`.otf`) is read from that path at
+run time and is never bundled.
+
+**User profile** (GUI only — the CLI never reads it) — the GUI keeps the
+signature library, the last placements and the wizard settings in
+`profile.json` under the user config dir, and a copy of the imported/drawn
+images in `signatures/` under the user data dir (Linux: `~/.config/Cachet/`
+and `~/.local/share/Cachet/`; Windows: `%LOCALAPPDATA%\Cachet\` for both;
+macOS: `~/Library/Application Support/Cachet/` for both). Override with
+`CACHET_CONFIG_DIR` / `CACHET_DATA_DIR`. The files are **unencrypted** and
+never contain a PIN, a token or any other credential. Nothing has to be
+installed or created beforehand: the folders appear at the first save.
+
+The **visual signatures** (image mode, and the stamps added in beid/azure
+mode) depend on none of the components listed above: they are fully
+functional and testable without hardware or network.
 
 ---
 
@@ -169,6 +212,8 @@ and testable without hardware.
 | GUI: `Can't find a usable init.tcl` / empty window | Tcl/Tk data not collected | rebuild with a Python that has a complete `tkinter`; the `_tkinter` hook collects it into `_tcl_data`/`_tk_data` |
 | GUI: `FileNotFoundError` on a `.json` theme | missing customtkinter assets | make sure `pyinstaller-hooks-contrib` is installed (it is); the spec also does `collect_all('customtkinter')` |
 | `ModuleNotFoundError: pkcs11._pkcs11` | native extension not bundled | already handled (`collect_dynamic_libs('pkcs11')` + hiddenimport); check the build log |
+| Text signature: `cannot load font '…': cannot open resource` / `bundled font file missing: …` | `fonts/` not in the bundle | check that `common_datas` in `cachet.spec` still carries `("fonts/*.ttf", "fonts")` (it must be in the **common** list, not only the GUI's) and that `fonts/` is present in the checkout |
+| Text signature: `The _imagingft C module is not installed` | Pillow's FreeType renderer not bundled | `PIL._imagingft` must stay in `common_hidden` (`cachet.spec`); check the build log |
 | `ZoneInfoNotFoundError` at signing time **on Windows** | zoneinfo database missing | `tzdata` (installed via `requirements-build.txt` on Windows; collected by the spec) |
 | OpenSSL error from `oscrypto` | version parsing on certain OpenSSL builds | not triggered by this app's image/eID modes (the Linux trust-list reads PEM files); otherwise `pip install` a fixed oscrypto or pyhanko-certvalidator ≥ 0.41 |
 | `beid mode` "fails" on a clean machine | eID middleware/reader/card missing | **expected**: install the eID middleware (see above); this is not a packaging bug |
@@ -195,6 +240,18 @@ test on real hardware** before distribution:
 4. Cross-check with the pyHanko CLI:
    `pyhanko sign validate --pretty-print --ltv-profile pades-lta <signed.pdf>`
    must report the expected level and a sound timestamp chain.
+5. **Visual signatures + eID signature.** Sign a multi-page PDF with the card
+   AND two visual signatures, one of them on every page (`--mode beid
+   --signatures sigs.json`, or the GUI's step 6), at B-LTA. In Adobe Acrobat
+   Reader the signature must be valid, "LTV enabled", and must **not** report
+   that the document was modified after signing: the visual signatures are
+   stamped before the signature, in the same revision.
+6. **Already-signed input.** Take the output of step 5 and
+   (a) countersign it with the card, with another field base name
+   (`--field Countersign`) and **no** visual signature — both signatures must
+   be valid in Acrobat; (b) try again **with** a visual signature — Cachet
+   must refuse the document (`the document is already signed…`) **before**
+   asking for the PIN, and write nothing.
 
 Reminder: with the default **free TSA** the timestamps are technically valid
 but **not qualified**; for eIDAS-qualified preservation, run the acceptance
@@ -218,6 +275,11 @@ path must be validated manually against a provisioned tenant:
 5. Negative check: pass `--azure-key-name <someone-else's key>` — the run
    must print the override warning, and Key Vault must deny the `sign`
    operation unless your account was explicitly granted it.
+6. Visual signatures: repeat step 1 with `--signatures sigs.json` (two visual
+   signatures, one on every page). Acrobat must show the signature as valid
+   and must **not** report a modification after signing. Then run it again on
+   that signed output: Cachet must refuse the document
+   (`the document is already signed…`) and write nothing.
 
 Reminder: azure mode produces an **advanced** signature (AES) with the
 internal CA — appropriate for internal documents, not a qualified (QES)
