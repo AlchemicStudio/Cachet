@@ -133,6 +133,13 @@ if _ilu.find_spec("tzdata") is not None:
     common_hidden += ["tzdata"]
     _meta("tzdata", common_datas)
 
+# Bundled OFL fonts for text signatures (CLI + GUI). stamps.asset_path resolves
+# them next to the module, or under sys._MEIPASS in the frozen binaries. The
+# OFL requires the licence texts to travel with the fonts.
+common_datas += [("fonts/*.ttf", "fonts"), ("fonts/licenses/*", "fonts/licenses")]
+# Visual stamps: local module + Pillow's FreeType text renderer.
+common_hidden += ["stamps", "PIL.ImageFont", "PIL.ImageDraw", "PIL.ImageOps", "PIL._imagingft"]
+
 # --------------------------------------------------------------------------- #
 #  GUI extras (only for the windowed binary)
 # --------------------------------------------------------------------------- #
@@ -143,8 +150,9 @@ gui_hidden = list(common_hidden)
 # customtkinter: hook provided, but collect_all guarantees themes + fonts.
 _add_all("customtkinter", datas=gui_datas, binaries=gui_binaries, hidden=gui_hidden)
 
-# The GUI's own assets: the top-bar logo (gui._asset_path resolves it under
-# sys._MEIPASS in the frozen binary). GUI binary only — the CLI has no UI.
+# The GUI's own assets: the top-bar logo (gui._asset_path delegates to
+# stamps.asset_path, which resolves it under sys._MEIPASS in the frozen
+# binary). GUI binary only — the CLI has no UI.
 gui_datas.append(("logo.png", "."))
 gui_hidden += [
     "darkdetect",
@@ -152,6 +160,8 @@ gui_hidden += [
     "tkinter.ttk",
     "tkinter.filedialog",
     "tkinter.messagebox",
+    "tkinter.colorchooser",  # colour picker of the text / drawing dialogs
+    "profile_store",  # user profile + signature image store (GUI only)
     "PIL.ImageTk",
     "PIL._tkinter_finder",
     "gui",  # local module imported lazily by gui_main
