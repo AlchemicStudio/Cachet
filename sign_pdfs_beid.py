@@ -28,10 +28,11 @@ from __future__ import annotations
 # merging develop -> main triggers the release workflow, which tags
 # v{__version__} and publishes the binaries (see .github/workflows/release.yml
 # and BUILD.md "Release process").
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 
 import argparse
 import dataclasses
+import datetime
 import io
 import os
 import platform
@@ -39,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
 
 import requests
@@ -53,7 +55,6 @@ from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.pdf_utils import images
 from pyhanko.pdf_utils.layout import (
     AxisAlignment,
-    BoxConstraints,
     InnerScaling,
     Margins,
     SimpleBoxLayoutRule,
@@ -63,8 +64,16 @@ from pyhanko.sign.fields import SigFieldSpec, SigSeedSubFilter
 from pyhanko.sign.validation import validate_pdf_signature
 from pyhanko.sign.validation.dss import DocumentSecurityStore
 from pyhanko.sign.validation.errors import NoDSSFoundError
-from pyhanko.stamp import StaticStampStyle, TextStampStyle
+from pyhanko.stamp import TextStampStyle
 from pyhanko_certvalidator import ValidationContext
+
+# Visual signatures (text / image stamps). NAMES are imported, never the
+# module object: `stamps` is also a RunConfig field and a sign_one() keyword.
+from stamps import (
+    BUNDLED_FONTS, DEFAULT_COLOR, DEFAULT_FONT, DEFAULT_FONT_SIZE, PAGE_ANCHORS,
+    Stamp, StampError, apply_stamps, existing_signature_count, load_stamps_file,
+    page_mediabox, validate_stamp,
+)
 
 # Since pyHanko >= 0.22, Belgian eID support lives in the separate plugin.
 # On a very old install (< 0.22), replace with:
@@ -285,33 +294,22 @@ def load_trust_anchor_certs(path) -> list:
     return certs
 
 
-def _page_mediabox(writer, page_index: int) -> list[float]:
-    """MediaBox of page `page_index` (0-based, -1 = last), with inheritance
-    from the page tree."""
-    page_ref, _ = writer.find_page_for_modification(page_index)
-    node = page_ref.get_object()
-    for _ in range(50):
-        if "/MediaBox" in node:
-            mb = node.raw_get("/MediaBox").get_object()
-            return [
-                float(v.get_object() if hasattr(v, "get_object") else v) for v in mb
-            ]
-        parent = node.get("/Parent")
-        if parent is None:
-            break
-        node = parent.get_object()
-    return [0.0, 0.0, 595.276, 841.89]  # A4 default
+def default_vignette_rect(page_w: float, page_h: float) -> tuple[float, float, float, float]:
+    """(x, y, w, h) of the default bottom-right vignette, relative to the page's
+    bottom-left corner."""
+    x1 = page_w - _STAMP_MARGIN
+    x0 = max(4, x1 - _STAMP_W)
+    y0 = _STAMP_MARGIN
+    y1 = min(y0 + _STAMP_H, page_h - 4)
+    return (x0, y0, x1 - x0, y1 - y0)
 
 
 def _default_vignette_box(writer, page_index: int = -1) -> tuple[float, float, float, float]:
     """Vignette rectangle, anchored bottom-right of page ``page_index``
     (0-based, -1 = last page — the historical default)."""
-    mb = _page_mediabox(writer, page_index)
-    x1 = mb[2] - _STAMP_MARGIN
-    x0 = max(mb[0] + 4, x1 - _STAMP_W)
-    y0 = mb[1] + _STAMP_MARGIN
-    y1 = min(y0 + _STAMP_H, mb[3] - 4)
-    return (x0, y0, x1, y1)
+    mb = page_mediabox(writer, page_index)
+    x, y, w, h = default_vignette_rect(mb[2] - mb[0], mb[3] - mb[1])
+    return (mb[0] + x, mb[1] + y, mb[0] + x + w, mb[1] + y + h)
 
 
 def build_stamp_style(
@@ -488,9 +486,20 @@ def sign_one(
     legacy_cms: bool = False,
     timestamper: timestamps.TimeStamper | None = None,
     validation_context: ValidationContext | None = None,
+    stamps: Sequence[Stamp] = (),
+    stamp_date: datetime.date | None = None,
+    stamp_cache: dict | None = None,
 ) -> None:
     """Sign a PDF (incremental signature) with any pyHanko ``Signer`` and
     stamp the visible vignette onto it ("Signed by ..." + optional photo).
+
+    ``stamps`` are the visual signatures (text / image) of the run: they are
+    applied into the SAME incremental writer BEFORE the signature, so the
+    signature covers them — there is never a second pass on ``dst``.
+    ``stamp_date`` is the run date for ``{date}`` and ``stamp_cache`` the
+    batch-wide cache of rendered content. With stamps, an input that already
+    carries a signature or a document timestamp is refused (``StampError``)
+    before anything is signed; without stamps it is countersigned as before.
 
     ``pades_level`` selects the PAdES baseline level (see
     ``signature_meta_kwargs``); ``timestamper`` must be provided for levels
@@ -519,13 +528,27 @@ def sign_one(
         # refuses to sign them
         # ("hybrid cross-reference sections while hybrid xrefs are disabled").
         writer = IncrementalPdfFileWriter(inf, strict=False)
+        if stamps:
+            # Stamps rewrite page content: on an input that already carries a
+            # signature or a document timestamp they would invalidate it, and
+            # self-verification (last signature only) would not notice.
+            if existing_signature_count(writer):
+                raise StampError(
+                    "the document is already signed: a visual signature would "
+                    "invalidate the existing signature(s) (sign it without visual "
+                    "signatures to countersign)")
+            # Visual signatures go into THIS writer, before the signature.
+            # Stamping the signed output afterwards would be flagged as a
+            # modification of the signed document.
+            apply_stamps(writer, stamps, filename=src.stem, date=stamp_date,
+                         cache=stamp_cache)
         if pos is None:
             on_page = page_index if page_index is not None else -1
             box = _default_vignette_box(writer, on_page)
             style = build_stamp_style(identity)
         else:
             on_page = page_index if page_index is not None else -1
-            mb = _page_mediabox(writer, on_page)
+            mb = page_mediabox(writer, on_page)
             vw, vh = vignette_size_pt(mb[2] - mb[0])
             x0, y0 = mb[0] + pos[0], mb[1] + pos[1]
             box = (x0, y0, x0 + vw, y0 + vh)
@@ -551,7 +574,6 @@ def sign_one(
 # batch contain documents whose page count differs from the template: the
 # anchor page must still match the template's anchor page exactly, so the
 # chosen (x, y) is guaranteed to fit the page that carries the signature.
-PAGE_ANCHORS = ("first", "last")
 
 
 def anchor_page_index(page_anchor: str) -> int:
@@ -599,15 +621,22 @@ def validate_against_template(
     pdf_path,
     *,
     page_anchor: str | None = None,
+    anchors=None,
+    blocker: str | None = None,
 ) -> ValidationResult:
     """Check that a PDF has the SAME page count AND per-page dimensions
     EXACTLY identical to the template (no tolerance).
 
-    With ``page_anchor`` ("first"/"last"), a file whose page count DIFFERS
-    from the template is accepted iff its anchor page has exactly the
-    template's anchor-page dimensions — that is the page the signature lands
-    on, so the chosen position is guaranteed to fit it. Files with the
-    template's page count keep the full strict check.
+    A file whose page count DIFFERS from the template is accepted iff EVERY
+    placed element targets a page anchor ("first"/"last") and each of those
+    anchor pages has exactly the template's anchor-page dimensions — those
+    are the pages the elements land on, so the chosen positions are
+    guaranteed to fit them. ``page_anchor`` names a single anchor;
+    ``anchors`` (a collection of anchors, see ``anchor_requirements``)
+    replaces it when given. ``blocker`` is a phrase naming an element that
+    does NOT target first/last: it rejects every page-count mismatch, with
+    that reason. Files with the template's page count keep the full strict
+    check.
     """
     path = Path(pdf_path)
     try:
@@ -616,20 +645,29 @@ def validate_against_template(
         return ValidationResult(path, False, f"unreadable ({exc})")
     if len(dims) != len(template_dims):
         count_msg = f"{len(dims)} page(s), the template has {len(template_dims)}"
-        if page_anchor is None or not dims or not template_dims:
-            return ValidationResult(path, False, count_msg)
-        idx = anchor_page_index(page_anchor)
-        d, t = dims[idx], template_dims[idx]
-        if d != t:
+        names = (tuple(a for a in PAGE_ANCHORS if a in anchors) if anchors is not None
+                 else ((page_anchor,) if page_anchor else ()))
+        if blocker:
             return ValidationResult(
                 path,
                 False,
-                f"{count_msg}; {page_anchor} page {d[0]:.2f}×{d[1]:.2f} pt "
-                f"≠ template {t[0]:.2f}×{t[1]:.2f} pt",
+                f"{count_msg}; {blocker} (only first/last page targets accept "
+                "a different page count)",
             )
-        return ValidationResult(
-            path, True, f"{count_msg} — signed on the {page_anchor} page"
-        )
+        if not names or not dims or not template_dims:
+            return ValidationResult(path, False, count_msg)
+        for name in names:                       # EVERY anchor page must match
+            idx = anchor_page_index(name)
+            d, t = dims[idx], template_dims[idx]
+            if d != t:
+                return ValidationResult(
+                    path,
+                    False,
+                    f"{count_msg}; {name} page {d[0]:.2f}×{d[1]:.2f} pt "
+                    f"≠ template {t[0]:.2f}×{t[1]:.2f} pt",
+                )
+        where = f"{names[0]} page" if len(names) == 1 else "first and last pages"
+        return ValidationResult(path, True, f"{count_msg} — signed on the {where}")
     for i, (d, t) in enumerate(zip(dims, template_dims), start=1):
         if d != t:
             return ValidationResult(
@@ -652,49 +690,31 @@ def validate_files(
 
 
 # =========================================================================
-#  "image" mode: inserting a signature image
+#  "image" mode: visual signatures only (text / image stamps)
 # =========================================================================
-_IMG_TARGET_W_PT = 150.0  # default insertion width (points, ratio preserved)
+def apply_stamps_one(src, dst, stamp_list, *, date=None, cache=None) -> bool:
+    """Visual-only path (image mode): apply every stamp, write ONE incremental update.
+    `dst` is written only when everything succeeded (no partial output). No card required.
 
-
-def image_size_pt(image_path) -> tuple[float, float]:
-    """Size (width, height) in points of the inserted image: fixed width
-    (_IMG_TARGET_W_PT), height derived from the ratio."""
-    with Image.open(image_path) as im:
-        w_px, h_px = im.size
-    return (_IMG_TARGET_W_PT, _IMG_TARGET_W_PT * h_px / w_px)
-
-
-def insert_image_one(src, dst, image_path, page_index: int, x: float, y: float) -> None:
-    """Insert the image on page `page_index` (0-based, -1 = last) with its
-    lower-left corner at (x, y) points from the page's lower-left corner.
-    Incremental update — no card required."""
-    img = Image.open(image_path)
-    img.load()
-    w_pt, h_pt = image_size_pt(image_path)
-    n_pages = len(page_dimensions(src))  # clear message if the page is out of range
-    if not (-n_pages <= page_index < n_pages):
-        shown = page_index + 1 if page_index >= 0 else page_index
-        raise ValueError(f"page {shown} out of range (the document has {n_pages} page(s))")
-    with open(src, "rb") as inf:
+    Returns True when the input already carried a signature or a document timestamp:
+    the stamps then invalidate it (historical behaviour of image mode, kept) and the
+    caller must say so."""
+    if not stamp_list:
+        raise StampError("no visual signature to apply")
+    src = Path(src)
+    with src.open("rb") as inf:
         writer = IncrementalPdfFileWriter(inf, strict=False)
-        mb = _page_mediabox(writer, page_index)  # (x, y) relative to the page corner
-        style = StaticStampStyle(
-            background=images.PdfImage(img),
-            background_opacity=1.0,
-            background_layout=SimpleBoxLayoutRule(
-                x_align=AxisAlignment.ALIGN_MID,
-                y_align=AxisAlignment.ALIGN_MID,
-                margins=Margins(),
-                inner_content_scaling=InnerScaling.STRETCH_TO_FIT,
-            ),
-            border_width=0,   # no black border around the inserted image
-        )
-        stamp = style.create_stamp(writer, BoxConstraints(width=w_pt, height=h_pt), {})
-        stamp.apply(page_index, int(round(mb[0] + x)), int(round(mb[1] + y)))
+        try:
+            already_signed = existing_signature_count(writer) > 0
+        except Exception:  # noqa: BLE001 - malformed form (e.g. /AcroForm not a dictionary)
+            # Image mode has always stamped such a document: the flag only
+            # drives a warning, it must not fail what used to succeed.
+            already_signed = False
+        apply_stamps(writer, stamp_list, filename=src.stem, date=date, cache=cache)
         out = io.BytesIO()
         writer.write(out)
     Path(dst).write_bytes(out.getbuffer())
+    return already_signed
 
 
 # =========================================================================
@@ -841,7 +861,7 @@ class RunConfig:
 
     inputs: list[Path]
     output: Path
-    mode: str = "beid"               # "beid" (eID card + vignette) | "image"
+    mode: str = "beid"               # "beid" | "azure" | "image" (visual signatures only)
     template: Path | None = None
     pades_level: str = "b-lta"       # b-b | b-t | b-lt | b-lta (beid mode)
     field: str = "Signature"
@@ -873,6 +893,11 @@ class RunConfig:
     azure_auth: str | None = None               # None -> device-code (CLI)
     azure_trust_anchors: Path | None = None     # PEM/DER file or directory
     azure_use_graph: bool = False               # Graph /me displayName opt-in
+    # Visual signatures (text / image). beid/azure: applied into the same
+    # incremental writer BEFORE the cryptographic signature. image mode:
+    # they are the whole job. The legacy single-image fields above
+    # (image_path/page/x/y/page_anchor) still work in image mode: see effective_stamps().
+    stamps: list[Stamp] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -883,6 +908,46 @@ class DocResult:
     output: Path | None
     ok: bool
     detail: str
+
+
+def effective_stamps(cfg: RunConfig) -> list[Stamp]:
+    """Every visual signature of the run: the legacy single image of image mode (if any),
+    then cfg.stamps."""
+    out: list[Stamp] = []
+    if cfg.mode == "image" and cfg.image_path:
+        out.append(Stamp(
+            kind="image", image_path=Path(cfg.image_path),
+            page=None if cfg.page_anchor else (cfg.page or 1),
+            page_anchor=cfg.page_anchor,
+            x=cfg.x if cfg.x is not None else 0.0,
+            y=cfg.y if cfg.y is not None else 0.0))
+    out.extend(cfg.stamps)
+    return out
+
+
+def anchor_requirements(cfg: RunConfig) -> tuple[tuple[str, ...], str | None]:
+    """(anchors, blocker) for template validation. `anchors`: the first/last anchors used
+    by the placed elements, ordered ("first", "last"). `blocker`: None when EVERY element
+    (each stamp, and the vignette in beid/azure) targets first/last, else a phrase naming the
+    first element that does not."""
+    recorded: set[str] = set()
+    blocker = None
+    for i, s in enumerate(effective_stamps(cfg), 1):
+        if s.page_anchor:
+            recorded.add(s.page_anchor)
+        elif blocker is None:
+            blocker = (f"signature #{i} targets every page" if s.all_pages
+                       else f"signature #{i} targets page {s.page}")
+    if cfg.mode in ("beid", "azure"):
+        if cfg.page_anchor:
+            recorded.add(cfg.page_anchor)
+        elif blocker is None:
+            # The default bottom-right vignette is NOT auto-anchored: a safety
+            # check is never relaxed silently, --page first|last must be explicit.
+            blocker = (f"the vignette targets page {cfg.page or 1}"
+                       if cfg.x is not None and cfg.y is not None
+                       else "the vignette has no first/last page target")
+    return (tuple(a for a in PAGE_ANCHORS if a in recorded), blocker)
 
 
 def validate_config(cfg: RunConfig) -> None:
@@ -957,13 +1022,24 @@ def validate_config(cfg: RunConfig) -> None:
             raise ValueError(
                 f"Trust anchors not found: {cfg.azure_trust_anchors}"
             )
+    # Visual signatures: the legacy image-mode checks first (their historical
+    # messages win), then every stamp. Optional in beid/azure, where
+    # cfg.image_path is ignored.
+    stamp_list = effective_stamps(cfg)
     if cfg.mode == "image":
-        if not cfg.image_path:
-            raise ValueError("--image-path is required in image mode.")
-        if not Path(cfg.image_path).exists():
+        if cfg.image_path and not Path(cfg.image_path).exists():
             raise ValueError(f"Image not found: {cfg.image_path}")
         if cfg.page is not None and cfg.page < 1:
             raise ValueError("--page must be >= 1.")
+        if not stamp_list:
+            raise ValueError(
+                "image mode needs at least one visual signature: "
+                "--text, --image-path or --signatures.")
+    for i, s in enumerate(stamp_list, 1):
+        try:
+            validate_stamp(s)
+        except StampError as exc:
+            raise ValueError(f"Signature #{i}: {exc}.") from None
     if cfg.template and not Path(cfg.template).exists():
         raise ValueError(f"Template not found: {cfg.template}")
 
@@ -1104,13 +1180,21 @@ def verify_signed_pdf(
         return label
 
 
-def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
+def process_batch(cfg: RunConfig, *, on_progress=None,
+                  today: datetime.date | None = None) -> list[DocResult]:
     """Validate (if a template is provided) then process each file according to
     the mode. Returns one DocResult per input file. `on_progress` is called
     after each document (useful for the GUI).
 
     In beid mode the PKCS#11 session, the RFC 3161 timestamper and the
     LTV ValidationContext are built ONCE here and reused for every document.
+
+    The visual signatures (``effective_stamps``) are resolved ONCE too, with
+    one run date for ``{date}`` (``today``, injectable for tests; default: the
+    local date) and one batch-wide cache of rendered content. In beid/azure
+    mode they are handed to ``sign_one``, which applies them into the same
+    incremental writer BEFORE the signature — the signed output is never
+    stamped afterwards. In image mode they are the whole job.
     """
     results: list[DocResult] = []
     template_dims = page_dimensions(cfg.template) if cfg.template else None
@@ -1161,7 +1245,13 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
 
     Path(cfg.output).mkdir(parents=True, exist_ok=True)
 
-    # Optional position (None = unspecified). beid mode: if provided, vignette
+    stamp_list = effective_stamps(cfg)
+    stamp_date = today or datetime.date.today()     # ONE local date for the whole run
+    stamp_cache: dict = {}                           # rendered/loaded images, batch-wide
+    anchors, blocker = anchor_requirements(cfg)
+
+    # VIGNETTE placement (beid/azure; unused in image mode, where every stamp
+    # carries its own). Optional position (None = unspecified): if provided, vignette
     # placed freely; otherwise default vignette (bottom-right corner).
     # A page anchor resolves the page PER DOCUMENT (first -> 0, last -> -1),
     # which is what makes page-count mismatches against the template workable.
@@ -1172,8 +1262,6 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
     else:
         page_index = (cfg.page or 1) - 1
         page_label = f"page {cfg.page or 1}"
-    x = cfg.x if cfg.x is not None else 0.0
-    y = cfg.y if cfg.y is not None else 0.0
 
     label = signature_level_label(cfg.pades_level, cfg.legacy_cms)
     mode_tag = "eID" if cfg.mode == "beid" else (
@@ -1183,7 +1271,7 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
         src = Path(src)
         if template_dims is not None:
             verdict = validate_against_template(
-                template_dims, src, page_anchor=cfg.page_anchor
+                template_dims, src, anchors=anchors, blocker=blocker
             )
             if not verdict.ok:
                 res = DocResult(src, None, False, f"rejected — {verdict.reason}")
@@ -1199,13 +1287,17 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
                     legacy_cms=cfg.legacy_cms,
                     timestamper=material.timestamper,
                     validation_context=material.validation_context,
+                    # Applied by sign_one BEFORE the signature, same writer.
+                    stamps=stamp_list,
+                    stamp_date=stamp_date,
+                    stamp_cache=stamp_cache,
                 )
                 if placement:
                     sign_one(signer, src, dst, f"{cfg.field}1", cfg.pades_level,
-                             identity, page_index=page_index, pos=(x, y),
+                             identity, page_index=page_index, pos=(cfg.x, cfg.y),
                              **sign_kwargs)
                     prefix = (f"signed ({mode_tag}) — vignette {page_label} "
-                              f"@ ({x:.0f}, {y:.0f})")
+                              f"@ ({cfg.x:.0f}, {cfg.y:.0f})")
                 else:
                     # No position: default bottom-right vignette. An anchor
                     # moves it to the first/last page; None keeps the
@@ -1217,6 +1309,8 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
                     prefix = f"signed ({mode_tag}) — vignette"
                     if cfg.page_anchor:
                         prefix += f" ({page_label}, bottom-right)"
+                if stamp_list:
+                    prefix += f" + {len(stamp_list)} visual signature(s)"
                 # R8: re-open + validate, report the *achieved* level. A
                 # mismatch raises SelfVerificationError -> document failed.
                 if (cfg.verify and not cfg.legacy_cms
@@ -1229,8 +1323,14 @@ def process_batch(cfg: RunConfig, *, on_progress=None) -> list[DocResult]:
                 else:
                     detail = f"{prefix} — {label}"
             else:
-                insert_image_one(src, dst, cfg.image_path, page_index, x, y)
-                detail = f"image inserted — {page_label} @ ({x:.0f}, {y:.0f})"
+                already_signed = apply_stamps_one(
+                    src, dst, stamp_list, date=stamp_date, cache=stamp_cache)
+                detail = (f"{len(stamp_list)} visual signature(s) applied — "
+                          + "; ".join(s.describe() for s in stamp_list))
+                if already_signed:
+                    # Historical outcome of image mode, kept — but said out loud.
+                    detail += (" — WARNING: the document was already signed; its "
+                               "existing signature(s) are no longer valid")
             res = DocResult(src, dst, True, detail)
         except SelfVerificationError as exc:
             res = DocResult(
@@ -1291,9 +1391,15 @@ def describe_placement(cfg: RunConfig) -> str:
     return f"vignette bottom-right, {cfg.page_anchor or 'last'} page"
 
 
+def describe_stamps(cfg: RunConfig) -> list[str]:
+    """One human line per visual signature of the run (CLI banner)."""
+    return [f"{s.describe()} — {s.content_label()}" for s in effective_stamps(cfg)]
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Batch-sign (Belgian eID card) or stamp an image onto PDFs."
+        description="Batch-sign PDFs (Belgian eID card or Azure Key Vault) and/or "
+                    "stamp visual signatures (text, images) onto them."
     )
     # Positionals kept for backward compatibility: "inputs… output".
     parser.add_argument(
@@ -1318,31 +1424,67 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("beid", "image", "azure"),
         default="beid",
-        help="Mode: beid (eID card + vignette), image (image insertion), or "
-             "azure (your personal certificate in Azure Key Vault via a "
-             "Microsoft Entra ID login — an advanced (AES), not qualified, "
-             "signature).",
+        help="Mode: beid (eID card + vignette), azure (your personal "
+             "certificate in Azure Key Vault via a Microsoft Entra ID login — "
+             "an advanced (AES), not qualified, signature), or image (visual "
+             "signatures only: text and/or images, NOT a cryptographic "
+             "signature). beid and azure can also carry visual signatures "
+             "(--signatures), applied before the cryptographic signature.",
     )
     parser.add_argument(
         "--image-path", dest="image_path", default=None,
-        help="Image to insert (required in --mode image).",
+        help="Image to stamp in --mode image (legacy single-image form; "
+             "placed with --page/--x/--y).",
     )
     parser.add_argument(
         "--page", type=page_arg, default=None, metavar="N|first|last",
         help="Target page: a 1-based number, or 'first'/'last' (resolved per "
-             "document). Image: insertion page. beid: vignette page. With "
-             "--template, first/last also accepts files whose page count "
-             "differs from the template (their first/last page must still "
-             "match the template's).",
+             "document). image mode: page of the --text / --image-path "
+             "signature. beid/azure: vignette page. With --template, a file "
+             "whose page count differs from the template is accepted only if "
+             "EVERY element targets first/last (and those pages match the "
+             "template's).",
     )
     parser.add_argument(
         "--x", type=float, default=None,
         help="X position (points, from the page's lower-left corner). "
-             "In beid mode, --x/--y place the vignette (otherwise: bottom-right).",
+             "image mode: the --text / --image-path signature. beid/azure: "
+             "--x/--y place the vignette (otherwise: bottom-right).",
     )
     parser.add_argument(
         "--y", type=float, default=None,
         help="Y position (points, from the page's lower-left corner).",
+    )
+    visual = parser.add_argument_group(
+        "visual signatures", "Text and image signatures stamped on the pages. "
+        "Not a cryptographic signature by themselves."
+    )
+    visual.add_argument(
+        "--signatures", dest="signatures", default=None, metavar="FILE.json",
+        help="JSON file: a list of visual signatures (kind text|image, "
+             "text/font/color/font_size or image_path/width_pt, one of page / "
+             "page_anchor / all_pages, x, y). Works in every mode; in "
+             "beid/azure they are applied before the cryptographic signature. "
+             "See README.",
+    )
+    visual.add_argument(
+        "--text", default=None,
+        help="Text signature for --mode image, placed with --page/--x/--y. "
+             "'\\n' starts a new line; {date} and {filename} are replaced per "
+             "document.",
+    )
+    visual.add_argument(
+        "--font", default=None,
+        help=f"Font of --text: one of {', '.join(BUNDLED_FONTS)} or the path of "
+             f"a .ttf/.otf file (default: {DEFAULT_FONT}).",
+    )
+    visual.add_argument(
+        "--color", default=None,
+        help=f"Colour of --text as #RRGGBB (default: {DEFAULT_COLOR}).",
+    )
+    visual.add_argument(
+        "--font-size", dest="font_size", type=float, default=None,
+        help="Font size of --text in points (default: 24).",
     )
     parser.add_argument("--lib", default=None, help="Path to the eID PKCS#11 lib.")
     parser.add_argument(
@@ -1486,6 +1628,43 @@ def resolve_config(args) -> RunConfig:
     if isinstance(page, str):
         page_anchor, page = page, None
 
+    # Visual signatures. getattr(): hand-made namespaces may lack the flags.
+    # --page/--x/--y belong to the single convenience stamp (--text here, or
+    # the legacy --image-path through effective_stamps) in image mode, and to
+    # the vignette in beid/azure; the entries of --signatures carry their own
+    # placement. The persisted GUI profile is NEVER read here.
+    text = getattr(args, "text", None)
+    font = getattr(args, "font", None)
+    color = getattr(args, "color", None)
+    font_size = getattr(args, "font_size", None)
+    sig_file = getattr(args, "signatures", None)
+    if text is None and (font is not None or color is not None or font_size is not None):
+        raise ValueError("--font, --color and --font-size need --text.")
+    if text is not None and args.mode != "image":
+        raise ValueError(
+            "--text only applies to --mode image; in beid/azure mode pass the "
+            "visual signatures with --signatures.")
+    if text is not None and args.image_path:
+        raise ValueError(
+            "--text and --image-path are mutually exclusive; use --signatures "
+            "to stamp several elements.")
+    stamp_list: list[Stamp] = []
+    if text is not None:
+        stamp_list.append(Stamp(
+            kind="text", text=text.replace("\\n", "\n"),
+            font=font or DEFAULT_FONT, color=color or DEFAULT_COLOR,
+            font_size=font_size if font_size is not None else DEFAULT_FONT_SIZE,
+            page=None if page_anchor else (page or 1), page_anchor=page_anchor,
+            x=args.x if args.x is not None else 0.0,
+            y=args.y if args.y is not None else 0.0))
+    if sig_file:
+        stamp_list.extend(load_stamps_file(sig_file))      # StampError is a ValueError
+        if (args.mode == "image" and text is None and not args.image_path
+                and (page is not None or page_anchor or args.x is not None or args.y is not None)):
+            raise ValueError(
+                "--page/--x/--y need --text or --image-path in image mode: the "
+                "signatures of --signatures carry their own placement.")
+
     cfg = RunConfig(
         inputs=collect_pdfs([str(p) for p in raw_inputs]),
         output=Path(output) if output else None,
@@ -1521,12 +1700,21 @@ def resolve_config(args) -> RunConfig:
             else None
         ),
         azure_use_graph=getattr(args, "azure_use_graph", False),
+        stamps=stamp_list,
     )
     validate_config(cfg)
     return cfg
 
 
 def main() -> int:
+    # Texts and file names are echoed: a character the console encoding lacks
+    # (redirected output on Windows is the ANSI code page) is escaped instead
+    # of raising UnicodeEncodeError before any document is processed. Guarded:
+    # a replaced stream (StringIO) has no reconfigure, and there is no stdout
+    # at all in the windowed binary.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     parser = build_arg_parser()
     args = parser.parse_args()
 
@@ -1549,6 +1737,13 @@ def main() -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    stamp_lines = describe_stamps(cfg)
+    extra = f" + {len(stamp_lines)} visual signature(s)" if stamp_lines else ""
+
+    def print_stamp_lines() -> None:
+        for i, line in enumerate(stamp_lines, 1):
+            print(f"  {i}. {line}")
+
     if cfg.mode == "beid":
         lib_path = cfg.lib or default_pkcs11_lib()
         if not Path(lib_path).exists():
@@ -1558,7 +1753,8 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
-        print(f"Mode: eID — {describe_placement(cfg)}. PKCS#11 lib: {lib_path}")
+        print(f"Mode: eID — {describe_placement(cfg)}{extra}. PKCS#11 lib: {lib_path}")
+        print_stamp_lines()
         # R9: the RRN is in the signing certificate, hence in every signature.
         print(
             "WARNING: each eID signature embeds the signer's national "
@@ -1575,8 +1771,9 @@ def main() -> int:
             print(f"LTV trust anchors: EU trusted list ({resolve_lotl_url(cfg.trust_list_url)})")
         print(f"{len(cfg.inputs)} PDF(s). The PIN will be requested for each document.")
     elif cfg.mode == "azure":
-        print(f"Mode: Azure Key Vault — {describe_placement(cfg)}. "
+        print(f"Mode: Azure Key Vault — {describe_placement(cfg)}{extra}. "
               f"Vault: {cfg.azure_vault_url}")
+        print_stamp_lines()
         # R11: AES, not QES — and the signature carries the user's identity.
         print(
             "Note: signs with YOUR personal Key Vault certificate — an "
@@ -1592,18 +1789,17 @@ def main() -> int:
         print(f"{len(cfg.inputs)} PDF(s). One Microsoft sign-in for the whole "
               f"batch ({resolve_azure_auth(cfg.azure_auth)}).")
     else:
-        page_phrase = (f"{cfg.page_anchor} page" if cfg.page_anchor
-                       else f"page {cfg.page or 1}")
-        print(
-            f"Mode: image — {cfg.image_path} "
-            f"({page_phrase}, x={cfg.x or 0:.0f}, y={cfg.y or 0:.0f})."
-        )
+        print(f"Mode: visual signatures — {len(stamp_lines)} element(s):")
+        print_stamp_lines()
         print(f"{len(cfg.inputs)} PDF(s).")
     if cfg.template:
         print(f"Validation against the template: {cfg.template}")
-        if cfg.page_anchor:
+        anchors, blocker = anchor_requirements(cfg)
+        if anchors and not blocker:
+            where = (f"{anchors[0]} page" if len(anchors) == 1
+                     else "first and last pages")
             print(f"  Files whose page count differs from the template are "
-                  f"accepted and signed on their {cfg.page_anchor} page.")
+                  f"accepted and signed on their {where}.")
     print()
 
     def progress(r: DocResult) -> None:
