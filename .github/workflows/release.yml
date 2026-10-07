@@ -58,6 +58,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # A stalled Tk suite or build must not hold the runner (and, for a
+    # release, its concurrency group) for GitHub's 6-hour default.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
@@ -68,28 +71,65 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
+      # xvfb/xauth + Tcl/Tk: the virtual display and the Tk runtime of the GUI
+      # suites below.
+      - name: Linux system deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils xvfb xauth libtk8.6 libtcl8.6
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-build.txt
 
-      # Gate the release on the test suite (Linux only: headless, the GUI
-      # tests skip without a display; on the Windows runner Tk could open
-      # real windows and hang the job).
-      - name: Unit tests
+      # Gate the release on the test suite (Linux only: on the Windows runner
+      # Tk could open real windows and hang the job). Same three steps as
+      # build.yml: headless suite (the Gui* classes skip themselves), a
+      # canary, then the Gui* suites under Xvfb.
+      - name: Unit tests (headless)
         if: runner.os == 'Linux'
-        run: python -m unittest -v
+        run: env -u DISPLAY python -m unittest -v
+
+      # The canary imports gui on purpose: the display guard of the GUI tests
+      # swallows an ImportError / NameError / SyntaxError of gui.py exactly
+      # like a missing display.
+      - name: GUI canary (a broken Tk or a broken gui module must fail, not skip)
+        if: runner.os == 'Linux'
+        env:
+          XMODIFIERS: "@im=none"
+        run: xvfb-run -a -s "-screen 0 1920x1200x24" python -c "import tkinter, customtkinter, gui; tkinter.Tk().destroy()"
+
+      # CACHET_REQUIRE_GUI=1 turns the guard's skip into a failure, so "GUI
+      # suites green" can never mean "everything skipped".
+      - name: GUI suites (Xvfb, skips are failures)
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        env:
+          XMODIFIERS: "@im=none"
+          CACHET_REQUIRE_GUI: "1"
+          PYTHONFAULTHANDLER: "1"         # with timeout -s ABRT: a stalled suite dumps its stacks
+        run: xvfb-run -a -s "-screen 0 1920x1200x24" timeout -s ABRT 900 python -m unittest -v -k Gui
 
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm --clean cachet.spec
 
-      - name: Smoke test (CLI image mode, no eID hardware)
+      # Legacy single image, then --text and --signatures: the last two prove
+      # that fonts/ and PIL._imagingft are in the CLI binary.
+      - name: Smoke test (CLI visual signatures, no eID hardware)
         shell: bash
         run: |
           python - <<'PY'
+          import json
           from test_sign_pdfs_beid import make_pdf, make_png
-          make_pdf("smoke.pdf", [(595, 842)])
+          make_pdf("smoke.pdf", [(595, 842), (595, 842)])
           make_png("sig.png")
+          with open("smoke_sigs.json", "w", encoding="utf-8") as fh:
+              json.dump([
+                  {"kind": "text", "text": "JD {date}", "font": "caveat", "font_size": 14,
+                   "all_pages": True, "x": 500, "y": 20},
+                  {"kind": "image", "image_path": "sig.png", "width_pt": 120,
+                   "page": 1, "x": 60, "y": 700},
+              ], fh)
           print("fixtures written")
           PY
           CLI=$(ls dist/cachet-cli* | head -1)
@@ -98,6 +138,12 @@ jobs:
                  --output smoke_out --page 1 --x 100 --y 100
           test -n "$(ls smoke_out/*.pdf 2>/dev/null)" || { echo "FAIL: no output PDF"; exit 1; }
           echo "OK: image mode works in the frozen binary."
+          "$CLI" --mode image --text "Jane Doe" --font great-vibes --color "#1A3FB4" \
+                 --input smoke.pdf --output smoke_text --page 1 --x 100 --y 100
+          test -n "$(ls smoke_text/*.pdf 2>/dev/null)" || { echo "FAIL: no text-mode output"; exit 1; }
+          "$CLI" --mode image --signatures smoke_sigs.json --input smoke.pdf --output smoke_multi
+          test -n "$(ls smoke_multi/*.pdf 2>/dev/null)" || { echo "FAIL: no --signatures output"; exit 1; }
+          echo "OK: bundled fonts + text rendering work in the frozen binary."
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
